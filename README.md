@@ -1,4 +1,4 @@
-﻿# Bus-Tracker-Revelstoke
+﻿# Bus-Proxy-Revelstoke
 A simple real-time bus tracker map for Revelstoke, BC, using OpenLayers on the frontend and GTFS-Realtime data from BC Transit via a Node.js backend.
 
 ---
@@ -75,4 +75,5 @@ Maintainer: Gala @ Surfing Kinetics
 Feel free to fork, use, and contribute!
 
 ---
+
 
