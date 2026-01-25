@@ -8,8 +8,8 @@ app.use(cors());
 
 // URL of the GTFS-Realtime protobuf schema
 const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
-// URL to fetch real-time vehicle updates for Kelowna from BC Transit
-const GTFS_FEED_URL = 'https://bct.tmix.se/gtfs-realtime/vehicleupdates.pb?operatorIds=47'; // Kelowna
+// URL to fetch real-time vehicle updates for Revelstoke from BC Transit
+const GTFS_FEED_URL = 'https://bct.tmix.se/gtfs-realtime/vehicleupdates.pb?operatorIds=36'; // Revelstoke
 
 let root = null;
 
