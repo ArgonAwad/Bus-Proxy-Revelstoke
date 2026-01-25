@@ -21,6 +21,7 @@ async function loadProto() {
   console.log('✅ GTFS proto loaded');
 }
 
+
 // Load the protobuf schema before handling any requests
 await loadProto();
 
@@ -41,6 +42,11 @@ app.get('/api/buses', async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log('🚀 Server running at http://localhost:3000');
+// ✅ For Vercel (prevents 404 at your main URL)
+app.get('/', (req, res) => {
+  res.send('🚌 Revelstoke Bus Proxy Server is running! Use /api/buses for bus data.');
 });
+
+// ✅ FOR VERCEL: Export instead of listening
+export default app;
+// ❌ REMOVE THE app.listen() LINES COMPLETELY
