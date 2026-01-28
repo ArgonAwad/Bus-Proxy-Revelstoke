@@ -8,7 +8,7 @@ app.use(cors());
 
 // Base URL for BC Transit GTFS-RT feeds
 const BASE_URL = 'https://bct.tmix.se/gtfs-realtime';
-const OPERATOR_ID = '36'; // Revelstoke
+const OPERATOR_ID = '47'; // Revelstoke
 
 // GTFS protobuf schema
 const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
