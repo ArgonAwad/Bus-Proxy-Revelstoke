@@ -76,7 +76,6 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID) {
     
     // Load schedule data
     await scheduleLoader.loadSchedule(operatorId);
-    console.log('✅ Schedule loaded');
     
     // Fetch real vehicle positions
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
@@ -90,13 +89,13 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID) {
       return vehicleResult;
     }
     
-    // Generate virtual vehicles
+    // Generate virtual vehicles (only creates new ones if needed)
     const virtualVehicles = virtualVehicleManager.generateVirtualVehicles(
       tripResult.data,
       scheduleLoader.scheduleData
     );
     
-    console.log(`👻 Generated ${virtualVehicles.length} virtual vehicles`);
+    console.log(`👻 Virtual vehicles: ${virtualVehicles.length}`);
     
     // Combine real and virtual
     const realEntities = vehicleResult.data?.entity || [];
@@ -104,12 +103,6 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID) {
       ...realEntities,
       ...virtualVehicles
     ];
-    
-    // Update virtual positions
-    virtualVehicleManager.updateVirtualPositions();
-    
-    // Clean up old virtual vehicles
-    virtualVehicleManager.cleanupOldVehicles();
     
     return {
       ...vehicleResult,
