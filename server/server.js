@@ -483,6 +483,245 @@ app.get('/api/info', (req, res) => {
   });
 });
 
+// ====== VIRTUAL BUS ENDPOINTS ======
+
+// 1. All virtual buses (all scheduled trips as virtual)
+app.get('/api/virtual_positions', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    // Set mode to ALL_VIRTUAL
+    virtualVehicleManager.setMode('all');
+    
+    // Load schedule
+    await scheduleLoader.loadSchedule(operatorId);
+    
+    // Get trip updates
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!tripResult.success) {
+      return res.status(500).json({
+        error: 'Failed to fetch trip updates',
+        details: tripResult.error
+      });
+    }
+    
+    // Generate ALL virtual vehicles
+    const virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
+      tripResult.data,
+      scheduleLoader.scheduleData
+    );
+    
+    // Update positions
+    virtualVehicleManager.updateVirtualPositions();
+    
+    res.json({
+      metadata: {
+        feedType: 'virtual_positions',
+        operatorId,
+        mode: 'all_virtual',
+        fetchedAt: new Date().toISOString(),
+        entities: virtualVehicles.length,
+        description: 'All scheduled trips shown as virtual buses'
+      },
+      data: {
+        entity: virtualVehicles,
+        header: {
+          gtfsRealtimeVersion: '1.0',
+          incrementality: 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          feedVersion: 'VIRTUAL-ALL'
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error in /api/virtual_positions:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// 2. Substitute virtual buses only (for missing real buses)
+app.get('/api/virtual_subs', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    // Set mode to SUBS_ONLY
+    virtualVehicleManager.setMode('subs');
+    
+    // Load schedule
+    await scheduleLoader.loadSchedule(operatorId);
+    
+    // Get real vehicle positions
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!tripResult.success) {
+      return res.status(500).json({
+        error: 'Failed to fetch trip updates',
+        details: tripResult.error
+      });
+    }
+    
+    // Get IDs of real vehicles
+    const realVehicleIds = new Set();
+    if (vehicleResult.success && vehicleResult.data?.entity) {
+      vehicleResult.data.entity.forEach(vehicle => {
+        if (vehicle.vehicle?.vehicle?.id) {
+          realVehicleIds.add(vehicle.vehicle.vehicle.id);
+        }
+      });
+    }
+    
+    // Generate substitute virtual vehicles
+    const virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
+      tripResult.data,
+      scheduleLoader.scheduleData,
+      realVehicleIds
+    );
+    
+    // Update positions
+    virtualVehicleManager.updateVirtualPositions();
+    
+    res.json({
+      metadata: {
+        feedType: 'virtual_subs',
+        operatorId,
+        mode: 'substitute_only',
+        fetchedAt: new Date().toISOString(),
+        entities: virtualVehicles.length,
+        real_vehicles_count: realVehicleIds.size,
+        description: 'Virtual buses only for scheduled trips missing real-time data'
+      },
+      data: {
+        entity: virtualVehicles,
+        header: {
+          gtfsRealtimeVersion: '1.0',
+          incrementality: 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          feedVersion: 'VIRTUAL-SUBS'
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error in /api/virtual_subs:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// 3. Updated vehicle positions (real + substitutes)
+app.get('/api/vehicle_positions', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const includeVirtual = req.query.virtual !== 'false';
+    
+    // Set mode based on query param
+    const mode = req.query.virtual_mode || 'subs';
+    virtualVehicleManager.setMode(mode);
+    
+    // Fetch real vehicle positions
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!vehicleResult.success) {
+      return res.status(500).json({
+        error: 'Failed to fetch vehicle positions',
+        details: vehicleResult.error,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    let virtualVehicles = [];
+    let allEntities = vehicleResult.data?.entity || [];
+    
+    // Add virtual vehicles if enabled
+    if (includeVirtual && tripResult.success) {
+      // Load schedule
+      await scheduleLoader.loadSchedule(operatorId);
+      
+      // Get IDs of real vehicles
+      const realVehicleIds = new Set();
+      allEntities.forEach(vehicle => {
+        if (vehicle.vehicle?.vehicle?.id) {
+          realVehicleIds.add(vehicle.vehicle.vehicle.id);
+        }
+      });
+      
+      // Generate virtual vehicles based on current mode
+      if (mode === 'all') {
+        virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
+          tripResult.data,
+          scheduleLoader.scheduleData
+        );
+      } else if (mode === 'subs') {
+        virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
+          tripResult.data,
+          scheduleLoader.scheduleData,
+          realVehicleIds
+        );
+      }
+      
+      // Combine real and virtual
+      allEntities = [...allEntities, ...virtualVehicles];
+      
+      // Update positions
+      virtualVehicleManager.updateVirtualPositions();
+    }
+    
+    res.json({
+      metadata: {
+        feedType: 'vehicle_positions',
+        operatorId,
+        fetchedAt: new Date().toISOString(),
+        url: vehicleResult.url,
+        entities: allEntities.length,
+        virtual_vehicles: virtualVehicles.length,
+        real_vehicles: (vehicleResult.data?.entity?.length || 0),
+        virtual_mode: mode,
+        include_virtual: includeVirtual
+      },
+      data: {
+        ...vehicleResult.data,
+        entity: allEntities
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error in /api/vehicle_positions:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// 4. Virtual bus mode configuration
+app.get('/api/virtual_config', (req, res) => {
+  const mode = req.query.mode;
+  const maxBuses = parseInt(req.query.max) || 3;
+  
+  let success = false;
+  let message = '';
+  
+  if (mode) {
+    success = virtualVehicleManager.setMode(mode);
+    message = success ? `Mode set to: ${mode}` : `Invalid mode: ${mode}`;
+  }
+  
+  if (maxBuses >= 1 && maxBuses <= 10) {
+    virtualVehicleManager.setMaxVirtualBuses(maxBuses);
+    message += message ? `, Max buses: ${maxBuses}` : `Max buses set to: ${maxBuses}`;
+    success = true;
+  }
+  
+  res.json({
+    success,
+    message: message || 'No changes made',
+    current_mode: virtualVehicleManager.currentMode,
+    max_virtual_buses: virtualVehicleManager.maxVirtualBuses,
+    current_virtual_count: virtualVehicleManager.getVirtualVehicleCount(),
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Root endpoint with HTML interface
 app.get('/', (req, res) => {
   res.send(`
