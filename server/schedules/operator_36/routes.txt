@@ -1,0 +1,4 @@
+route_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+1-REVY,1,Southside - Hospital,3,004B8D,FFFFFF
+3-REVY,3,Big Eddy,3,004B8D,FFFFFF
+5-REVY,5,Revelstoke Mountain Resort Shuttle,3,004B8D,FFFFFF
