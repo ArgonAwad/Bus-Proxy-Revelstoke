@@ -5,7 +5,7 @@ import scheduleLoader from './schedule-loader.js';
 class VirtualVehicleManager {
   constructor() {
     this.virtualVehicles = new Map();
-    this.scheduledTrips = new Map();
+    this.lastGenerated = new Map(); // Track when we last generated for each trip
   }
 
   // Process trip updates to identify scheduled but untracked vehicles
@@ -13,58 +13,61 @@ class VirtualVehicleManager {
     const virtualVehicles = [];
     
     if (!tripUpdates || !tripUpdates.entity) {
-      console.log('❌ No trip updates data available');
       return virtualVehicles;
     }
     
-    console.log(`🔍 Checking ${tripUpdates.entity.length} trip updates for virtual vehicles...`);
+    const now = Date.now();
     
-    tripUpdates.entity.forEach((tripUpdate, index) => {
-      // Check if this is a trip_update entity
-      if (!tripUpdate.tripUpdate) {
-        return;
-      }
+    tripUpdates.entity.forEach((tripUpdate) => {
+      if (!tripUpdate.tripUpdate) return;
       
       const trip = tripUpdate.tripUpdate.trip;
       const vehicle = tripUpdate.tripUpdate.vehicle;
       
-      if (!trip || !trip.tripId) {
-        return;
-      }
+      if (!trip || !trip.tripId) return;
       
       const tripId = trip.tripId;
       const vehicleId = vehicle ? vehicle.id : null;
       
-      // If trip exists but vehicle is null or empty
-      if (tripId && (!vehicleId || vehicleId === '' || vehicleId === null)) {
-        console.log(`  ✅ Creating virtual vehicle for trip: ${tripId}`);
-        
-        const virtualVehicle = this.createVirtualVehicleFromTripUpdate(
-          tripUpdate.tripUpdate,
-          scheduleData
-        );
-        
-        if (virtualVehicle) {
-          virtualVehicles.push(virtualVehicle);
-          this.virtualVehicles.set(tripId, {
-            ...virtualVehicle,
-            lastUpdated: Date.now()
-          });
+      // Skip if trip already has a real vehicle
+      if (vehicleId && vehicleId !== '') return;
+      
+      // Check if we recently generated for this trip (within 30 seconds)
+      const lastGenTime = this.lastGenerated.get(tripId) || 0;
+      if (now - lastGenTime < 30000) {
+        // Use existing virtual vehicle if we have one
+        const existing = this.virtualVehicles.get(tripId);
+        if (existing) {
+          virtualVehicles.push(existing);
+          return;
         }
+      }
+      
+      // Create new virtual vehicle
+      console.log(`  ✅ Creating virtual vehicle for trip: ${tripId}`);
+      const virtualVehicle = this.createVirtualVehicleFromTripUpdate(
+        tripUpdate.tripUpdate,
+        scheduleData,
+        tripId
+      );
+      
+      if (virtualVehicle) {
+        virtualVehicles.push(virtualVehicle);
+        this.virtualVehicles.set(tripId, virtualVehicle);
+        this.lastGenerated.set(tripId, now);
       }
     });
     
-    console.log(`🎯 Created ${virtualVehicles.length} virtual vehicles`);
+    console.log(`🎯 Returning ${virtualVehicles.length} virtual vehicles`);
     return virtualVehicles;
   }
 
   // Create from trip update structure
-  createVirtualVehicleFromTripUpdate(tripUpdate, scheduleData) {
+  createVirtualVehicleFromTripUpdate(tripUpdate, scheduleData, tripId) {
     const trip = tripUpdate.trip;
     const stopTimes = tripUpdate.stopTimeUpdate || [];
     
     if (stopTimes.length === 0) {
-      console.log(`  ⚠️ No stop times for trip ${trip.tripId}`);
       return null;
     }
     
@@ -73,19 +76,18 @@ class VirtualVehicleManager {
     const upcomingStop = this.findUpcomingStop(stopTimes, currentTime);
     
     if (!upcomingStop) {
-      console.log(`  ⚠️ No upcoming stop found for trip ${trip.tripId}`);
       return null;
     }
     
-    // Generate virtual vehicle ID
-    const virtualVehicleId = `VIRTUAL_${trip.tripId}_${Date.now()}`;
+    // Generate CONSISTENT virtual vehicle ID (no timestamp)
+    const virtualVehicleId = `VIRTUAL_${tripId}`;
     
     // Get position from stop
     const position = this.getPositionFromStop(upcomingStop.stopId, scheduleData);
     
-    console.log(`  🚌 Virtual ${trip.tripId} at stop ${upcomingStop.stopId}, position: ${position.latitude},${position.longitude}`);
+    // Calculate progress to next stop for movement simulation
+    const progress = this.calculateProgress(stopTimes, upcomingStop, currentTime);
     
-    // Create the vehicle object in the correct GTFS-RT format
     return {
       id: virtualVehicleId,
       isDeleted: false,
@@ -108,13 +110,13 @@ class VirtualVehicleManager {
           speed: position.speed
         },
         currentStopSequence: upcomingStop.stopSequence || 1,
-        currentStatus: 2, // 2 = IN_TRANSIT_TO
+        currentStatus: this.getVehicleStatus(stopTimes, upcomingStop, currentTime),
         timestamp: currentTime,
         congestionLevel: 0,
         stopId: upcomingStop.stopId,
         vehicle: {
           id: virtualVehicleId,
-          label: `Virtual ${trip.routeId || 'Bus'}`,
+          label: this.getVehicleLabel(trip.routeId, trip.tripId),
           licensePlate: "",
           wheelchairAccessible: 0,
           is_virtual: true,
@@ -122,39 +124,77 @@ class VirtualVehicleManager {
         },
         occupancyStatus: 0,
         occupancyPercentage: 0,
-        multiCarriageDetails: []
+        multiCarriageDetails: [],
+        progress: progress // Store progress for movement updates
       },
       alert: null,
       shape: null,
       stop: null,
-      tripModifications: null
+      tripModifications: null,
+      lastUpdated: Date.now(),
+      stopTimes: stopTimes, // Store for movement calculation
+      currentStopIndex: this.findStopIndex(stopTimes, upcomingStop)
     };
+  }
+
+  getVehicleLabel(routeId, tripId) {
+    // Extract route number from routeId (e.g., "5-REVY" -> "5")
+    const routeNumber = routeId ? routeId.split('-')[0] : '?';
+    return `Ghost Bus ${routeNumber}`;
+  }
+
+  getVehicleStatus(stopTimes, currentStop, currentTime) {
+    const arrivalTime = currentStop.arrival?.time || currentStop.departure?.time;
+    
+    if (!arrivalTime) return 2; // IN_TRANSIT_TO
+    
+    // Check if at stop (within 60 seconds of arrival)
+    if (Math.abs(currentTime - arrivalTime) < 60) {
+      return 1; // STOPPED_AT
+    }
+    
+    return 2; // IN_TRANSIT_TO
+  }
+
+  calculateProgress(stopTimes, currentStop, currentTime) {
+    const currentIndex = this.findStopIndex(stopTimes, currentStop);
+    if (currentIndex >= stopTimes.length - 1) return 1; // At last stop
+    
+    const currentStopTime = currentStop.arrival?.time || currentStop.departure?.time;
+    const nextStop = stopTimes[currentIndex + 1];
+    const nextStopTime = nextStop.arrival?.time || nextStop.departure?.time;
+    
+    if (!currentStopTime || !nextStopTime || nextStopTime <= currentStopTime) {
+      return 0;
+    }
+    
+    // Calculate progress 0-1 between stops
+    const progress = (currentTime - currentStopTime) / (nextStopTime - currentStopTime);
+    return Math.max(0, Math.min(1, progress));
+  }
+
+  findStopIndex(stopTimes, stop) {
+    return stopTimes.findIndex(s => 
+      s.stopId === stop.stopId && s.stopSequence === stop.stopSequence
+    );
   }
 
   // Helper to find upcoming stop
   findUpcomingStop(stopTimes, currentTime) {
-    // First, check if we're at or past the last stop
-    const lastStop = stopTimes[stopTimes.length - 1];
-    const lastStopTime = lastStop.arrival?.time || lastStop.departure?.time;
-    
-    if (lastStopTime && currentTime >= lastStopTime) {
-      return lastStop;
-    }
-    
-    // Find the next upcoming stop
+    // Find the next stop that hasn't passed yet
     for (const stop of stopTimes) {
-      const arrivalTime = stop.arrival?.time || stop.departure?.time;
-      if (arrivalTime && arrivalTime > currentTime) {
+      const departureTime = stop.departure?.time || stop.arrival?.time;
+      if (departureTime && departureTime > currentTime) {
         return stop;
       }
     }
     
-    // Return first stop if before trip start
-    return stopTimes[0] || null;
+    // If all stops passed, return the last one
+    return stopTimes[stopTimes.length - 1] || null;
   }
 
-  // Get position from stop ID
-  getPositionFromStop(stopId, scheduleData) {
+  // Get position from stop ID with interpolation between stops
+  getPositionFromStop(stopId, scheduleData, progress = 0) {
     // Try to get from schedule data first
     if (scheduleData && scheduleData.stops) {
       const stopInfo = scheduleData.stops[stopId];
@@ -162,100 +202,138 @@ class VirtualVehicleManager {
         return {
           latitude: stopInfo.lat,
           longitude: stopInfo.lon,
-          bearing: Math.floor(Math.random() * 360),
+          bearing: 0,
           speed: 0
         };
       }
     }
     
-    // Fallback: Use some Revelstoke coordinates based on stop ID patterns
-    let fallbackLat = 50.9981; // Default Revelstoke center
-    let fallbackLon = -118.1957;
+    // Fallback coordinates
+    const fallbackCoords = {
+      '156011': [50.9981, -118.1957], // Downtown Exchange
+      '156087': [51.0050, -118.2150], // Big Eddy
+      '156083': [50.9975, -118.2020], // Uptown
+      '156101': [50.9910, -118.1890], // Highway 23
+      '156047': [50.9990, -118.1960],
+      '156051': [50.9960, -118.2010]
+    };
     
-    // Common Revelstoke stop IDs from your data
-    if (stopId && stopId.startsWith('156')) {
-      // Map known stop IDs to approximate locations
-      const stopMap = {
-        '156011': [50.9981, -118.1957], // Downtown Exchange
-        '156087': [51.0050, -118.2150], // Big Eddy
-        '156083': [50.9975, -118.2020], // Uptown
-        '156101': [50.9910, -118.1890], // Highway 23
-        '156056': [50.9930, -118.1980],
-        '156089': [50.9940, -118.2000],
-        '156090': [50.9950, -118.2010],
-        '156091': [50.9960, -118.2020],
-        '156092': [50.9970, -118.2030],
-        '156094': [50.9990, -118.1970],
-        '156095': [51.0000, -118.1960]
-      };
-      
-      const coords = stopMap[stopId];
-      if (coords) {
-        fallbackLat = coords[0];
-        fallbackLon = coords[1];
-      }
-    }
+    const coords = fallbackCoords[stopId] || [50.9981, -118.1957];
     
     return {
-      latitude: fallbackLat,
-      longitude: fallbackLon,
+      latitude: coords[0],
+      longitude: coords[1],
       bearing: Math.floor(Math.random() * 360),
-      speed: Math.random() * 10 + 5 // 5-15 km/h
+      speed: 10 + Math.random() * 20 // 10-30 km/h
     };
   }
 
   // Update virtual vehicle positions periodically
   updateVirtualPositions() {
-    const updatedVehicles = [];
     const now = Date.now();
+    let updatedCount = 0;
     
     for (const [tripId, vehicle] of this.virtualVehicles) {
       const age = now - vehicle.lastUpdated;
       
-      // Update every 30 seconds
-      if (age > 30000) {
-        // Simulate movement
-        const updatedVehicle = this.simulateMovement(vehicle);
-        updatedVehicle.lastUpdated = now;
-        this.virtualVehicles.set(tripId, updatedVehicle);
-        updatedVehicles.push(updatedVehicle);
+      // Update every 10 seconds for smooth movement
+      if (age > 10000) {
+        this.updateVehiclePosition(vehicle);
+        vehicle.lastUpdated = now;
+        updatedCount++;
       }
     }
     
-    if (updatedVehicles.length > 0) {
-      console.log(`🔄 Updated ${updatedVehicles.length} virtual vehicles`);
+    if (updatedCount > 0) {
+      console.log(`🔄 Updated ${updatedCount} virtual vehicle positions`);
     }
     
-    return updatedVehicles;
+    return updatedCount;
   }
 
-  simulateMovement(vehicle) {
-    const newVehicle = { ...vehicle };
+  updateVehiclePosition(vehicle) {
+    if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) return;
     
-    // Add slight position variation (simulate movement)
-    if (newVehicle.vehicle && newVehicle.vehicle.position) {
-      // Move ~10-30 meters in random direction
-      const latOffset = (Math.random() - 0.5) * 0.0003;
-      const lonOffset = (Math.random() - 0.5) * 0.0003;
-      
-      newVehicle.vehicle.position.latitude += latOffset;
-      newVehicle.vehicle.position.longitude += lonOffset;
-      newVehicle.vehicle.position.bearing = Math.floor(Math.random() * 360);
-      newVehicle.vehicle.position.speed = Math.random() * 15 + 5; // 5-20 km/h
-      newVehicle.vehicle.timestamp = Math.floor(Date.now() / 1000);
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    // Find current stop based on schedule
+    const upcomingStop = this.findUpcomingStop(vehicle.stopTimes, currentTime);
+    if (!upcomingStop) return;
+    
+    // Update stop info
+    vehicle.vehicle.currentStopSequence = upcomingStop.stopSequence || 1;
+    vehicle.vehicle.stopId = upcomingStop.stopId;
+    vehicle.vehicle.currentStatus = this.getVehicleStatus(
+      vehicle.stopTimes, 
+      upcomingStop, 
+      currentTime
+    );
+    
+    // Calculate progress
+    const progress = this.calculateProgress(
+      vehicle.stopTimes, 
+      upcomingStop, 
+      currentTime
+    );
+    
+    // Update position (with interpolation if between stops)
+    if (progress > 0 && progress < 1) {
+      // Interpolate between current and next stop
+      const currentIndex = this.findStopIndex(vehicle.stopTimes, upcomingStop);
+      if (currentIndex < vehicle.stopTimes.length - 1) {
+        const nextStop = vehicle.stopTimes[currentIndex + 1];
+        const currentPos = this.getPositionFromStop(upcomingStop.stopId, null, 0);
+        const nextPos = this.getPositionFromStop(nextStop.stopId, null, 0);
+        
+        // Linear interpolation
+        vehicle.vehicle.position.latitude = 
+          currentPos.latitude + (nextPos.latitude - currentPos.latitude) * progress;
+        vehicle.vehicle.position.longitude = 
+          currentPos.longitude + (nextPos.longitude - currentPos.longitude) * progress;
+        
+        // Calculate bearing towards next stop
+        const bearing = this.calculateBearing(
+          currentPos.latitude, currentPos.longitude,
+          nextPos.latitude, nextPos.longitude
+        );
+        vehicle.vehicle.position.bearing = bearing;
+        vehicle.vehicle.position.speed = 20 + Math.random() * 10; // 20-30 km/h
+      }
+    } else {
+      // At a stop
+      const position = this.getPositionFromStop(upcomingStop.stopId, null, 0);
+      vehicle.vehicle.position.latitude = position.latitude;
+      vehicle.vehicle.position.longitude = position.longitude;
+      vehicle.vehicle.position.bearing = position.bearing;
+      vehicle.vehicle.position.speed = 0; // Stopped
     }
     
-    return newVehicle;
+    vehicle.vehicle.timestamp = currentTime;
+    vehicle.vehicle.progress = progress;
   }
 
-  // Clean up old virtual vehicles
-  cleanupOldVehicles(maxAgeMinutes = 60) {
+  calculateBearing(lat1, lon1, lat2, lon2) {
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) -
+            Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    const θ = Math.atan2(y, x);
+    
+    return (θ * 180 / Math.PI + 360) % 360;
+  }
+
+  // Clean up old virtual vehicles (trips that have ended)
+  cleanupOldVehicles(maxAgeMinutes = 120) {
     const cutoff = Date.now() - (maxAgeMinutes * 60 * 1000);
     let removed = 0;
     
     for (const [tripId, vehicle] of this.virtualVehicles) {
       if (vehicle.lastUpdated < cutoff) {
         this.virtualVehicles.delete(tripId);
+        this.lastGenerated.delete(tripId);
         removed++;
       }
     }
@@ -280,4 +358,4 @@ class VirtualVehicleManager {
 
 // Create and export a singleton instance
 const virtualVehicleManager = new VirtualVehicleManager();
-export default virtualVehicleManager;
+export default virtualVehicleManager;;
