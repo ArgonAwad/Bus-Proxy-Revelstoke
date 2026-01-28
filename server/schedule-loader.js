@@ -61,7 +61,7 @@ class ScheduleLoader {
 
       this.scheduleData = {
         trips,
-        stops,
+        stops: this.createStopsMap(stops),
         stop_times: stopTimes,
         routes,
         loadedAt: new Date().toISOString(),
@@ -83,6 +83,19 @@ class ScheduleLoader {
       console.warn('Using fallback schedule data...');
       return this.getFallbackSchedule(operatorId);
     }
+  }
+
+  createStopsMap(stopsArray) {
+    const stopsMap = {};
+    stopsArray.forEach(stop => {
+      stopsMap[stop.stop_id] = {
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+        lat: parseFloat(stop.stop_lat) || 0,
+        lon: parseFloat(stop.stop_lon) || 0
+      };
+    });
+    return stopsMap;
   }
 
   async readOrCreateFile(filePath) {
@@ -195,15 +208,7 @@ route_002,2,Broadway Line,3`;
 
   createLookupMaps() {
     // Create stops lookup map
-    this.stopsMap = {};
-    this.scheduleData.stops.forEach(stop => {
-      this.stopsMap[stop.stop_id] = {
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name || `Stop ${stop.stop_id}`,
-        lat: parseFloat(stop.stop_lat) || 0,
-        lon: parseFloat(stop.stop_lon) || 0
-      };
-    });
+    this.stopsMap = this.scheduleData.stops;
 
     // Create trips lookup map
     this.tripsMap = {};
@@ -237,44 +242,66 @@ route_002,2,Broadway Line,3`;
     
     // Fallback coordinates for major BC cities based on operator ID
     const fallbackLocations = {
-      '36': { lat: 50.9981, lon: -118.1957 }, // Revelstoke
-      '47': { lat: 49.8880, lon: -119.4960 }, // Kelowna
-      '48': { lat: 48.4284, lon: -123.3656 }  // Victoria
+      '36': { 
+        name: 'Revelstoke',
+        center: { lat: 50.9981, lon: -118.1957 },
+        stops: {
+          '156011': { stop_id: '156011', stop_name: 'Downtown Exchange', lat: 50.9981, lon: -118.1957 },
+          '156087': { stop_id: '156087', stop_name: 'Big Eddy', lat: 51.0050, lon: -118.2150 },
+          '156083': { stop_id: '156083', stop_name: 'Uptown', lat: 50.9975, lon: -118.2020 },
+          '156101': { stop_id: '156101', stop_name: 'Highway 23', lat: 50.9910, lon: -118.1890 }
+        }
+      },
+      '47': { 
+        name: 'Kelowna',
+        center: { lat: 49.8880, lon: -119.4960 },
+        stops: {
+          'stop_001': { stop_id: 'stop_001', stop_name: 'Kelowna Downtown', lat: 49.8880, lon: -119.4960 },
+          'stop_002': { stop_id: 'stop_002', stop_name: 'Uptown Kelowna', lat: 49.8830, lon: -119.4900 }
+        }
+      },
+      '48': { 
+        name: 'Victoria',
+        center: { lat: 48.4284, lon: -123.3656 },
+        stops: {
+          'stop_001': { stop_id: 'stop_001', stop_name: 'Victoria Downtown', lat: 48.4284, lon: -123.3656 },
+          'stop_002': { stop_id: 'stop_002', stop_name: 'Uptown Victoria', lat: 48.4350, lon: -123.3550 }
+        }
+      }
     };
     
-    const location = fallbackLocations[operatorId] || { lat: 49.2827, lon: -123.1207 }; // Default: Vancouver
+    const location = fallbackLocations[operatorId] || { 
+      name: 'Unknown',
+      center: { lat: 49.2827, lon: -123.1207 },
+      stops: {
+        'stop_001': { stop_id: 'stop_001', stop_name: 'Downtown', lat: 49.2827, lon: -123.1207 },
+        'stop_002': { stop_id: 'stop_002', stop_name: 'Uptown', lat: 49.2830, lon: -123.1150 }
+      }
+    };
     
     this.scheduleData = {
       trips: [
         { trip_id: 'trip_001', route_id: 'route_001', direction_id: '0', service_id: 'weekday' },
-        { trip_id: 'trip_002', route_id: 'route_001', direction_id: '1', service_id: 'weekday' }
+        { trip_id: 'trip_002', route_id: 'route_001', direction_id: '1', service_id: 'weekday' },
+        { trip_id: 'trip_003', route_id: 'route_002', direction_id: '0', service_id: 'weekday' }
       ],
-      stops: {
-        'stop_001': { 
-          stop_id: 'stop_001', 
-          stop_name: 'Downtown Terminal', 
-          lat: location.lat + 0.001, 
-          lon: location.lon + 0.001 
-        },
-        'stop_002': { 
-          stop_id: 'stop_002', 
-          stop_name: 'Uptown Station', 
-          lat: location.lat - 0.001, 
-          lon: location.lon - 0.001 
-        }
-      },
+      stops: location.stops,
       stop_times: [
-        { trip_id: 'trip_001', stop_id: 'stop_001', arrival_time: '08:00:00', departure_time: '08:00:00', stop_sequence: '1' },
-        { trip_id: 'trip_001', stop_id: 'stop_002', arrival_time: '08:30:00', departure_time: '08:30:00', stop_sequence: '2' },
-        { trip_id: 'trip_002', stop_id: 'stop_002', arrival_time: '09:00:00', departure_time: '09:00:00', stop_sequence: '1' },
-        { trip_id: 'trip_002', stop_id: 'stop_001', arrival_time: '09:30:00', departure_time: '09:30:00', stop_sequence: '2' }
+        { trip_id: 'trip_001', stop_id: Object.keys(location.stops)[0], arrival_time: '08:00:00', departure_time: '08:00:00', stop_sequence: '1' },
+        { trip_id: 'trip_001', stop_id: Object.keys(location.stops)[1], arrival_time: '08:30:00', departure_time: '08:30:00', stop_sequence: '2' },
+        { trip_id: 'trip_002', stop_id: Object.keys(location.stops)[1], arrival_time: '09:00:00', departure_time: '09:00:00', stop_sequence: '1' },
+        { trip_id: 'trip_002', stop_id: Object.keys(location.stops)[0], arrival_time: '09:30:00', departure_time: '09:30:00', stop_sequence: '2' },
+        { trip_id: 'trip_003', stop_id: Object.keys(location.stops)[2], arrival_time: '10:00:00', departure_time: '10:00:00', stop_sequence: '1' },
+        { trip_id: 'trip_003', stop_id: Object.keys(location.stops)[3], arrival_time: '10:30:00', departure_time: '10:30:00', stop_sequence: '2' }
       ],
       routes: [
-        { route_id: 'route_001', route_short_name: '1', route_long_name: 'Main Line', route_type: '3' }
+        { route_id: 'route_001', route_short_name: '1', route_long_name: `${location.name} Main Line`, route_type: '3' },
+        { route_id: 'route_002', route_short_name: '2', route_long_name: `${location.name} Loop Line`, route_type: '3' }
       ],
       loadedAt: new Date().toISOString(),
       operatorId,
-      isFallback: true
+      isFallback: true,
+      locationName: location.name
     };
 
     this.createLookupMaps();
@@ -291,36 +318,6 @@ route_002,2,Broadway Line,3`;
 
   getStopTimesForTrip(tripId) {
     return this.stopTimesByTrip?.[tripId] || [];
-  }
-
-  findTripByTimeAndRoute(routeId, directionId, currentTime) {
-    // Convert current time to HH:MM:SS format
-    const now = new Date();
-    const timeStr = now.toTimeString().split(' ')[0]; // HH:MM:SS
-    
-    // Simple lookup - find a trip that's currently active based on schedule
-    const trips = this.scheduleData?.trips?.filter(trip => 
-      trip.route_id === routeId && 
-      trip.direction_id === directionId.toString()
-    ) || [];
-
-    return trips.length > 0 ? trips[0] : null;
-  }
-
-  // Helper to get coordinates for interpolation between stops
-  interpolatePosition(stopId1, stopId2, progress) {
-    const stop1 = this.getStopInfo(stopId1);
-    const stop2 = this.getStopInfo(stopId2);
-    
-    if (!stop1 || !stop2) {
-      return stop1 || stop2 || { lat: 0, lon: 0 };
-    }
-    
-    // Linear interpolation between two stops
-    const lat = stop1.lat + (stop2.lat - stop1.lat) * progress;
-    const lon = stop1.lon + (stop2.lon - stop1.lon) * progress;
-    
-    return { lat, lon };
   }
 }
 
