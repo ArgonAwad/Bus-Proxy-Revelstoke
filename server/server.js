@@ -407,5 +407,20 @@ fetch('/api/service_alerts?operatorId=48')
   `);
 });
 
+import virtualUpdater from './virtual-updater.js';
+
+// Start the virtual vehicle updater when proto is loaded
+async function initializeServer() {
+  await loadProto();
+  virtualUpdater.start();
+  
+  // Cleanup on exit
+  process.on('SIGTERM', () => {
+    virtualUpdater.stop();
+    process.exit(0);
+  });
+}
+
+initializeServer().catch(console.error);
 // Export for Vercel
 export default app;
