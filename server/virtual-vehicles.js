@@ -1,5 +1,6 @@
 // virtual-vehicles.js
 import { DateTime } from 'luxon';
+import scheduleLoader from './schedule-loader.js';
 
 class VirtualVehicleManager {
   constructor() {
@@ -21,7 +22,6 @@ class VirtualVehicleManager {
     tripUpdates.entity.forEach((tripUpdate, index) => {
       // Check if this is a trip_update entity
       if (!tripUpdate.tripUpdate) {
-        console.log(`  Skipping entity ${index} - not a trip update`);
         return;
       }
       
@@ -29,14 +29,11 @@ class VirtualVehicleManager {
       const vehicle = tripUpdate.tripUpdate.vehicle;
       
       if (!trip || !trip.tripId) {
-        console.log(`  Skipping entity ${index} - no trip ID`);
         return;
       }
       
       const tripId = trip.tripId;
       const vehicleId = vehicle ? vehicle.id : null;
-      
-      console.log(`  Trip ${index}: ${tripId}, Vehicle: ${vehicleId || 'NULL'}`);
       
       // If trip exists but vehicle is null or empty
       if (tripId && (!vehicleId || vehicleId === '' || vehicleId === null)) {
@@ -165,7 +162,7 @@ class VirtualVehicleManager {
         return {
           latitude: stopInfo.lat,
           longitude: stopInfo.lon,
-          bearing: Math.floor(Math.random() * 360), // Random bearing
+          bearing: Math.floor(Math.random() * 360),
           speed: 0
         };
       }
