@@ -7,23 +7,93 @@ class VirtualVehicleManager {
     this.virtualVehicles = new Map();
     this.lastGenerated = new Map();
     this.virtualBusCounter = 1;
-    this.maxVirtualBuses = 3;
+    
+    // Virtual bus modes
+    this.MODE = {
+      ALL_VIRTUAL: 'all',        // All scheduled trips as virtual
+      SUBS_ONLY: 'subs',         // Only virtual for missing real buses
+      NONE: 'none'               // No virtual buses
+    };
+    
+    this.currentMode = this.MODE.SUBS_ONLY; // Default mode
   }
 
-  // Process trip updates to identify scheduled but untracked vehicles
-  generateVirtualVehicles(tripUpdates, scheduleData) {
+  // Set the virtual bus mode
+  setMode(mode) {
+    if (Object.values(this.MODE).includes(mode)) {
+      this.currentMode = mode;
+      console.log(`🔧 Virtual bus mode set to: ${mode}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Get virtual vehicles based on current mode
+  getVirtualVehicles(tripUpdates, scheduleData, realVehicleIds = new Set()) {
+    switch (this.currentMode) {
+      case this.MODE.ALL_VIRTUAL:
+        return this.generateAllVirtualVehicles(tripUpdates, scheduleData);
+      case this.MODE.SUBS_ONLY:
+        return this.generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds);
+      case this.MODE.NONE:
+        return [];
+      default:
+        return [];
+    }
+  }
+
+  // MODE 1: All scheduled trips as virtual (for testing/debugging)
+  generateAllVirtualVehicles(tripUpdates, scheduleData) {
     const virtualVehicles = [];
     
     if (!tripUpdates || !tripUpdates.entity) {
       return virtualVehicles;
     }
     
-    const now = Date.now();
-    const currentTimeSec = Math.floor(now / 1000);
-    let virtualCount = 0;
+    const currentTimeSec = Math.floor(Date.now() / 1000);
     
-    // First, get all ACTIVE trips that need virtual vehicles
-    const activeTripsNeedingVirtuals = [];
+    tripUpdates.entity.forEach((tripUpdate, index) => {
+      if (!tripUpdate.tripUpdate) return;
+      
+      const trip = tripUpdate.tripUpdate.trip;
+      const stopTimes = tripUpdate.tripUpdate.stopTimeUpdate || [];
+      
+      if (!trip || !trip.tripId || stopTimes.length === 0) return;
+      
+      // Check if trip is active (within ±2 hours)
+      if (this.isTripInTimeWindow(stopTimes, currentTimeSec, 7200)) {
+        const virtualBusNumber = virtualVehicles.length + 1;
+        const virtualVehicle = this.createVirtualVehicle(
+          trip,
+          stopTimes,
+          scheduleData,
+          `VALL${virtualBusNumber.toString().padStart(3, '0')}`,
+          'All Virtual'
+        );
+        
+        if (virtualVehicle) {
+          virtualVehicles.push(virtualVehicle);
+        }
+      }
+    });
+    
+    console.log(`👻 ALL VIRTUAL mode: Created ${virtualVehicles.length} virtual buses`);
+    return virtualVehicles;
+  }
+
+  // MODE 2: Only virtual buses for missing real buses
+  generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
+    const virtualVehicles = [];
+    
+    if (!tripUpdates || !tripUpdates.entity) {
+      return virtualVehicles;
+    }
+    
+    const currentTimeSec = Math.floor(Date.now() / 1000);
+    let subCount = 0;
+    
+    // Get trips that are currently active
+    const activeTrips = [];
     
     tripUpdates.entity.forEach((tripUpdate) => {
       if (!tripUpdate.tripUpdate) return;
@@ -34,75 +104,50 @@ class VirtualVehicleManager {
       
       if (!trip || !trip.tripId || stopTimes.length === 0) return;
       
-      const tripId = trip.tripId;
-      const vehicleId = vehicle ? vehicle.id : null;
-      
-      // Skip if trip already has a real vehicle
-      if (vehicleId && vehicleId !== '') return;
-      
-      // Check if trip is CURRENTLY ACTIVE (not future, not past)
-      const isCurrentlyActive = this.isTripCurrentlyActive(stopTimes, currentTimeSec);
-      
-      if (isCurrentlyActive) {
-        activeTripsNeedingVirtuals.push({
-          tripUpdate: tripUpdate.tripUpdate,
-          tripId,
+      // Check if trip is currently active
+      if (this.isTripCurrentlyActive(stopTimes, currentTimeSec)) {
+        const hasRealVehicle = vehicle && vehicle.id && vehicle.id !== '';
+        const tripVehicleId = vehicle?.id || trip.tripId;
+        
+        activeTrips.push({
+          trip,
           stopTimes,
-          startTime: stopTimes[0]?.departure?.time || stopTimes[0]?.arrival?.time
+          hasRealVehicle,
+          tripVehicleId,
+          vehicleData: vehicle
         });
       }
     });
     
-    // Sort by how long they've been active (most recent first)
-    activeTripsNeedingVirtuals.sort((a, b) => {
-      // Sort by how close to current time (active longest first)
-      const aActiveTime = currentTimeSec - (a.startTime || 0);
-      const bActiveTime = currentTimeSec - (b.startTime || 0);
-      return Math.abs(aActiveTime) - Math.abs(bActiveTime);
-    });
-    
-    // Create virtual vehicles ONLY for currently active trips
-    for (let i = 0; i < Math.min(activeTripsNeedingVirtuals.length, this.maxVirtualBuses); i++) {
-      const { tripUpdate, tripId, stopTimes } = activeTripsNeedingVirtuals[i];
+    // For each active trip without a real vehicle, create a substitute
+    activeTrips.forEach((activeTrip, index) => {
+      const { trip, stopTimes, hasRealVehicle, tripVehicleId } = activeTrip;
       
-      // Check if we recently generated for this trip
-      const lastGenTime = this.lastGenerated.get(tripId) || 0;
-      if (now - lastGenTime < 30000) {
-        // Use existing virtual vehicle if we have one
-        const existing = this.virtualVehicles.get(tripId);
-        if (existing) {
-          virtualVehicles.push(existing);
-          virtualCount++;
-          continue;
+      // Check if this vehicle is in the real vehicles list
+      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId);
+      
+      // Create virtual substitute if no real vehicle
+      if (!hasRealVehicle && !isRealVehicleTracked) {
+        subCount++;
+        const virtualVehicle = this.createVirtualVehicle(
+          trip,
+          stopTimes,
+          scheduleData,
+          `VSUB${subCount.toString().padStart(3, '0')}`,
+          'Substitute'
+        );
+        
+        if (virtualVehicle) {
+          virtualVehicles.push(virtualVehicle);
         }
       }
-      
-      // Create new virtual vehicle
-      console.log(`  ✅ Creating virtual vehicle for ACTIVE trip: ${tripId}`);
-      const virtualVehicle = this.createVirtualVehicleFromTripUpdate(
-        tripUpdate,
-        scheduleData,
-        tripId,
-        virtualCount + 1
-      );
-      
-      if (virtualVehicle) {
-        virtualVehicles.push(virtualVehicle);
-        this.virtualVehicles.set(tripId, virtualVehicle);
-        this.lastGenerated.set(tripId, now);
-        virtualCount++;
-      }
-    }
+    });
     
-    console.log(`🎯 Created ${virtualVehicles.length} virtual vehicles for ACTIVE trips`);
-    
-    // Clean up any virtual vehicles for trips that are no longer active
-    this.cleanupInactiveVirtualVehicles(currentTimeSec);
-    
+    console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses for ${activeTrips.length} active trips`);
     return virtualVehicles;
   }
 
-  // Check if a trip is CURRENTLY active (not future, not past)
+  // Check if trip is currently active (within schedule)
   isTripCurrentlyActive(stopTimes, currentTimeSec) {
     if (stopTimes.length === 0) return false;
     
@@ -114,52 +159,34 @@ class VirtualVehicleManager {
     
     if (!startTime || !endTime) return false;
     
-    // Trip is CURRENTLY active if current time is between start and end
-    return currentTimeSec >= startTime && currentTimeSec <= endTime;
+    // Add 5-minute buffer for early/late buses
+    const buffer = 300;
+    return currentTimeSec >= (startTime - buffer) && currentTimeSec <= (endTime + buffer);
   }
 
-  // Clean up virtual vehicles for trips that are no longer active
-  cleanupInactiveVirtualVehicles(currentTimeSec) {
-    let removed = 0;
+  // Check if trip is within time window (±window seconds)
+  isTripInTimeWindow(stopTimes, currentTimeSec, windowSeconds) {
+    if (stopTimes.length === 0) return false;
     
-    for (const [tripId, vehicle] of this.virtualVehicles) {
-      if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
-        this.virtualVehicles.delete(tripId);
-        removed++;
-        continue;
-      }
-      
-      const lastStop = vehicle.stopTimes[vehicle.stopTimes.length - 1];
-      const endTime = lastStop.arrival?.time || lastStop.departure?.time;
-      
-      // If trip has ended (more than 5 minutes ago), remove it
-      if (endTime && (currentTimeSec - endTime) > 300) {
-        console.log(`  🗑️ Removing virtual vehicle for ended trip: ${tripId}`);
-        this.virtualVehicles.delete(tripId);
-        this.lastGenerated.delete(tripId);
-        removed++;
-      }
-    }
+    const firstStop = stopTimes[0];
+    const lastStop = stopTimes[stopTimes.length - 1];
     
-    if (removed > 0) {
-      console.log(`🧹 Cleaned up ${removed} inactive virtual vehicles`);
-    }
+    const startTime = firstStop.departure?.time || firstStop.arrival?.time;
+    const endTime = lastStop.arrival?.time || lastStop.departure?.time;
     
-    return removed;
+    if (!startTime || !endTime) return false;
+    
+    // Check if current time is within window of trip
+    return Math.abs(currentTimeSec - startTime) <= windowSeconds || 
+           Math.abs(currentTimeSec - endTime) <= windowSeconds ||
+           (currentTimeSec >= startTime && currentTimeSec <= endTime);
   }
 
-  // Create from trip update structure
-  createVirtualVehicleFromTripUpdate(tripUpdate, scheduleData, tripId, busNumber) {
-    const trip = tripUpdate.trip;
-    const stopTimes = tripUpdate.stopTimeUpdate || [];
-    
-    if (stopTimes.length === 0) {
-      return null;
-    }
-    
+  // Create a virtual vehicle
+  createVirtualVehicle(trip, stopTimes, scheduleData, vehicleId, modeType) {
     const currentTimeSec = Math.floor(Date.now() / 1000);
     
-    // Find the current position based on schedule
+    // Find current position based on schedule
     const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
     
     if (!currentStopInfo) {
@@ -168,17 +195,15 @@ class VirtualVehicleManager {
     
     const { currentStop, nextStop, progress } = currentStopInfo;
     
-    // Generate SIMPLE virtual vehicle ID
-    const virtualVehicleId = `V${busNumber.toString().padStart(4, '0')}`;
-    
-    // Calculate position (interpolate between stops if moving)
+    // Calculate position
     const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleData);
     
-    // Create route display name
+    // Create route display
     const routeDisplay = this.getRouteDisplayName(trip.routeId);
+    const labelPrefix = modeType === 'All Virtual' ? 'Virtual' : 'Ghost';
     
     return {
-      id: virtualVehicleId,
+      id: vehicleId,
       isDeleted: false,
       tripUpdate: null,
       vehicle: {
@@ -204,13 +229,13 @@ class VirtualVehicleManager {
         congestionLevel: 0,
         stopId: currentStop.stopId,
         vehicle: {
-          id: virtualVehicleId,
-          label: `Ghost ${routeDisplay}`,
+          id: vehicleId,
+          label: `${labelPrefix} ${routeDisplay}`,
           licensePlate: "",
           wheelchairAccessible: 0,
           is_virtual: true,
-          is_scheduled: true,
-          virtual_bus_number: busNumber
+          virtual_mode: modeType,
+          original_trip_id: trip.tripId
         },
         occupancyStatus: 0,
         occupancyPercentage: 0,
@@ -225,11 +250,11 @@ class VirtualVehicleManager {
       stopTimes: stopTimes,
       currentStop: currentStop,
       nextStop: nextStop,
-      originalTripId: tripId
+      modeType: modeType
     };
   }
 
-  // Find current stop and progress between stops
+  // Find current stop and progress (same as before)
   findCurrentStopAndProgress(stopTimes, currentTimeSec) {
     for (let i = 0; i < stopTimes.length; i++) {
       const currentStop = stopTimes[i];
@@ -240,12 +265,10 @@ class VirtualVehicleManager {
       
       if (!currentStopTime) continue;
       
-      // If at the last stop
       if (!nextStop && currentTimeSec >= currentStopTime) {
         return { currentStop, nextStop: null, progress: 0 };
       }
       
-      // If between current stop and next stop
       if (nextStopTime && currentTimeSec >= currentStopTime && currentTimeSec <= nextStopTime) {
         const progress = (currentTimeSec - currentStopTime) / (nextStopTime - currentStopTime);
         return { 
@@ -255,71 +278,50 @@ class VirtualVehicleManager {
         };
       }
       
-      // If before the first stop (shouldn't happen for active trips)
       if (i === 0 && currentTimeSec < currentStopTime) {
         return { currentStop, nextStop: null, progress: 0 };
       }
     }
     
-    // If past all stops, return last stop
     const lastStop = stopTimes[stopTimes.length - 1];
     return { currentStop: lastStop, nextStop: null, progress: 0 };
   }
 
-  // Calculate current position with interpolation
+  // Calculate position (same as before)
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData) {
-    // Get coordinates for current stop
-    let lat, lon;
+    // Get coordinates
+    const coords = this.getStopCoordinates(currentStop.stopId, scheduleData);
+    let lat = coords.lat;
+    let lon = coords.lon;
     
-    if (scheduleData && scheduleData.stops) {
-      const stopInfo = scheduleData.stops[currentStop.stopId];
-      if (stopInfo && stopInfo.lat && stopInfo.lon) {
-        lat = stopInfo.lat;
-        lon = stopInfo.lon;
-      }
-    }
-    
-    // If we don't have coordinates from schedule, use fallback
-    if (!lat || !lon) {
-      const fallbackCoords = this.getFallbackCoordinates(currentStop.stopId);
-      lat = fallbackCoords.lat;
-      lon = fallbackCoords.lon;
-    }
-    
-    // If moving to next stop and we have next stop coordinates, interpolate
+    // Interpolate if moving to next stop
     if (progress > 0 && nextStop) {
-      let nextLat, nextLon;
-      
-      if (scheduleData && scheduleData.stops) {
-        const nextStopInfo = scheduleData.stops[nextStop.stopId];
-        if (nextStopInfo && nextStopInfo.lat && nextStopInfo.lon) {
-          nextLat = nextStopInfo.lat;
-          nextLon = nextStopInfo.lon;
-        }
-      }
-      
-      if (!nextLat || !nextLon) {
-        const nextFallback = this.getFallbackCoordinates(nextStop.stopId);
-        nextLat = nextFallback.lat;
-        nextLon = nextFallback.lon;
-      }
+      const nextCoords = this.getStopCoordinates(nextStop.stopId, scheduleData);
       
       // Interpolate between stops
-      lat = lat + (nextLat - lat) * progress;
-      lon = lon + (nextLon - lon) * progress;
+      lat = lat + (nextCoords.lat - lat) * progress;
+      lon = lon + (nextCoords.lon - lon) * progress;
       
-      // Calculate bearing towards next stop
-      const bearing = this.calculateBearing(lat, lon, nextLat, nextLon);
+      // Calculate bearing and speed
+      const bearing = this.calculateBearing(lat, lon, nextCoords.lat, nextCoords.lon);
       const speed = 25; // km/h
       
       return { latitude: lat, longitude: lon, bearing, speed };
     }
     
-    // At a stop
     return { latitude: lat, longitude: lon, bearing: 0, speed: 0 };
   }
 
-  getFallbackCoordinates(stopId) {
+  getStopCoordinates(stopId, scheduleData) {
+    // Try schedule data first
+    if (scheduleData && scheduleData.stops) {
+      const stopInfo = scheduleData.stops[stopId];
+      if (stopInfo && stopInfo.lat && stopInfo.lon) {
+        return { lat: stopInfo.lat, lon: stopInfo.lon };
+      }
+    }
+    
+    // Fallback coordinates
     const fallbackCoords = {
       '156011': { lat: 50.9981, lon: -118.1957 }, // Downtown Exchange
       '156087': { lat: 51.0050, lon: -118.2150 }, // Big Eddy
@@ -355,7 +357,7 @@ class VirtualVehicleManager {
     return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
   }
 
-  // Update virtual vehicle positions periodically
+  // Update positions
   updateVirtualPositions() {
     const now = Date.now();
     let updatedCount = 0;
@@ -363,7 +365,6 @@ class VirtualVehicleManager {
     for (const [tripId, vehicle] of this.virtualVehicles) {
       const age = now - vehicle.lastUpdated;
       
-      // Update every 15 seconds
       if (age > 15000) {
         this.updateVehiclePosition(vehicle);
         vehicle.lastUpdated = now;
@@ -378,15 +379,13 @@ class VirtualVehicleManager {
     if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) return;
     
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    
-    // Find current position based on schedule
     const currentStopInfo = this.findCurrentStopAndProgress(vehicle.stopTimes, currentTimeSec);
     
     if (!currentStopInfo) return;
     
     const { currentStop, nextStop, progress } = currentStopInfo;
     
-    // Update vehicle properties
+    // Update properties
     vehicle.vehicle.currentStopSequence = currentStop.stopSequence || 1;
     vehicle.vehicle.stopId = currentStop.stopId;
     vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
@@ -400,12 +399,11 @@ class VirtualVehicleManager {
     vehicle.vehicle.position.bearing = position.bearing;
     vehicle.vehicle.position.speed = position.speed;
     
-    // Update references
     vehicle.currentStop = currentStop;
     vehicle.nextStop = nextStop;
   }
 
-  // Clean up old virtual vehicles
+  // Cleanup
   cleanupOldVehicles(maxAgeMinutes = 120) {
     const cutoff = Date.now() - (maxAgeMinutes * 60 * 1000);
     let removed = 0;
