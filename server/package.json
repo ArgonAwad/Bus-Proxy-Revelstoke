@@ -1,6 +1,6 @@
 {
   "name": "bus-proxy-revelstoke",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "BC Transit GTFS-RT Proxy with Virtual Vehicles",
   "main": "server.js",
   "type": "module",
@@ -17,5 +17,15 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "keywords": [
+    "transit",
+    "gtfs",
+    "gtfs-rt",
+    "bc-transit",
+    "revelstoke",
+    "virtual-vehicles"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
 }
