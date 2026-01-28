@@ -2,7 +2,7 @@
 import virtualVehicleManager from './virtual-vehicles.js';
 
 class VirtualUpdater {
-  constructor(updateInterval = 30000) { // 30 seconds
+  constructor(updateInterval = 10000) { // 10 seconds (was 30)
     this.updateInterval = updateInterval;
     this.intervalId = null;
     this.isRunning = false;
@@ -20,10 +20,11 @@ class VirtualUpdater {
     this.intervalId = setInterval(() => {
       try {
         const updated = virtualVehicleManager.updateVirtualPositions();
-        virtualVehicleManager.cleanupOldVehicles();
+        virtualVehicleManager.cleanupOldVehicles(60); // Clean up after 60 minutes
         
-        if (updated.length > 0) {
-          console.log(`🔄 Updated ${updated.length} virtual vehicle positions`);
+        // Only log if something actually changed
+        if (updated > 0) {
+          console.log(`🔄 Updated ${updated} virtual vehicle positions`);
         }
       } catch (error) {
         console.error('❌ Error in virtual vehicle update:', error);
