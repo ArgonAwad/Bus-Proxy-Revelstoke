@@ -232,6 +232,7 @@ app.get('/api/service_alerts', async (req, res) => {
 // ====== COMBINED FEED ENDPOINT ======
 
 // All feeds combined (legacy /api/buses endpoint)
+// All feeds combined (legacy /api/buses endpoint)
 app.get('/api/buses', async (req, res) => {
   if (!root) return res.status(500).json({ error: 'Proto not loaded' });
 
@@ -245,13 +246,25 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
     
+    // ====== REPLACE THIS ENTIRE SECTION (lines 24-44) ======
     // Enhance vehicle positions with virtual vehicles
     let enhancedVehicleResult = vehicleResult;
     if (vehicleResult.success && tripResult.success) {
       await scheduleLoader.loadSchedule(operatorId);
-      const virtualVehicles = virtualVehicleManager.generateVirtualVehicles(
+      
+      // Get IDs of real vehicles
+      const realVehicleIds = new Set();
+      vehicleResult.data?.entity?.forEach(vehicle => {
+        if (vehicle.vehicle?.vehicle?.id) {
+          realVehicleIds.add(vehicle.vehicle.vehicle.id);
+        }
+      });
+      
+      // Generate substitute virtual vehicles
+      const virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
         tripResult.data,
-        scheduleLoader.scheduleData
+        scheduleLoader.scheduleData,
+        realVehicleIds
       );
       
       if (virtualVehicles.length > 0) {
@@ -273,6 +286,7 @@ app.get('/api/buses', async (req, res) => {
         };
       }
     }
+    // ====== END OF REPLACEMENT ======
     
     // Prepare combined response
     const response = {
