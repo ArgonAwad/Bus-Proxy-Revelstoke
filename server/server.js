@@ -11,7 +11,7 @@ const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/
 const BASE_URL = 'https://bct.tmix.se/gtfs-realtime';
 
 // Default operator ID (Revelstoke = 36, can be overridden via query param)
-const DEFAULT_OPERATOR_ID = '47';
+const DEFAULT_OPERATOR_ID = '36';
 
 let root = null;
 
