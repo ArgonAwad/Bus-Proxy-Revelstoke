@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import protobuf from 'protobufjs';
+import virtualVehicleManager from './virtual-vehicles.js';
+import scheduleLoader from './schedule-loader.js';
+import virtualUpdater from './virtual-updater.js';
 
 const app = express();
 app.use(cors());
@@ -66,16 +69,84 @@ async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
   }
 }
 
+// Enhanced vehicle positions with virtual vehicles
+async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID) {
+  try {
+    console.log(`🚀 Enhancing vehicle positions for operator ${operatorId}`);
+    
+    // Load schedule data
+    await scheduleLoader.loadSchedule(operatorId);
+    console.log('✅ Schedule loaded');
+    
+    // Fetch real vehicle positions
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    console.log(`📊 Real vehicles: ${vehicleResult.data?.entity?.length || 0}`);
+    console.log(`📊 Trip updates: ${tripResult.data?.entity?.length || 0}`);
+    
+    if (!tripResult.success) {
+      console.log('⚠️ No trip updates available');
+      return vehicleResult;
+    }
+    
+    // Generate virtual vehicles
+    const virtualVehicles = virtualVehicleManager.generateVirtualVehicles(
+      tripResult.data,
+      scheduleLoader.scheduleData
+    );
+    
+    console.log(`👻 Generated ${virtualVehicles.length} virtual vehicles`);
+    
+    // Combine real and virtual
+    const realEntities = vehicleResult.data?.entity || [];
+    const allEntities = [
+      ...realEntities,
+      ...virtualVehicles
+    ];
+    
+    // Update virtual positions
+    virtualVehicleManager.updateVirtualPositions();
+    
+    // Clean up old virtual vehicles
+    virtualVehicleManager.cleanupOldVehicles();
+    
+    return {
+      ...vehicleResult,
+      data: {
+        ...vehicleResult.data,
+        entity: allEntities,
+        metadata: {
+          ...vehicleResult.data.metadata,
+          total_vehicles: allEntities.length,
+          virtual_vehicles: virtualVehicles.length,
+          real_vehicles: realEntities.length
+        }
+      }
+    };
+  } catch (error) {
+    console.error('❌ Error enhancing vehicle positions:', error);
+    throw error;
+  }
+}
+
 // Load the protobuf schema before handling any requests
 await loadProto();
 
 // ====== INDIVIDUAL FEED ENDPOINTS ======
 
-// Vehicle positions only
+// Vehicle positions only (with virtual vehicles)
 app.get('/api/vehicle_positions', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    const result = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    const includeVirtual = req.query.virtual !== 'false';
+    
+    let result;
+    if (includeVirtual) {
+      result = await getEnhancedVehiclePositions(operatorId);
+    } else {
+      result = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    }
     
     if (result.success) {
       res.json({
@@ -84,7 +155,8 @@ app.get('/api/vehicle_positions', async (req, res) => {
           operatorId,
           fetchedAt: result.timestamp,
           url: result.url,
-          entities: result.data.entity?.length || 0
+          entities: result.data.entity?.length || 0,
+          virtual_vehicles: result.data.metadata?.virtual_vehicles || 0
         },
         data: result.data
       });
@@ -180,6 +252,35 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
     
+    // Enhance vehicle positions with virtual vehicles
+    let enhancedVehicleResult = vehicleResult;
+    if (vehicleResult.success && tripResult.success) {
+      await scheduleLoader.loadSchedule(operatorId);
+      const virtualVehicles = virtualVehicleManager.generateVirtualVehicles(
+        tripResult.data,
+        scheduleLoader.scheduleData
+      );
+      
+      if (virtualVehicles.length > 0) {
+        const realEntities = vehicleResult.data?.entity || [];
+        const allEntities = [...realEntities, ...virtualVehicles];
+        
+        enhancedVehicleResult = {
+          ...vehicleResult,
+          data: {
+            ...vehicleResult.data,
+            entity: allEntities,
+            metadata: {
+              ...vehicleResult.data.metadata,
+              total_vehicles: allEntities.length,
+              virtual_vehicles: virtualVehicles.length,
+              real_vehicles: realEntities.length
+            }
+          }
+        };
+      }
+    }
+    
     // Prepare combined response
     const response = {
       metadata: {
@@ -190,9 +291,10 @@ app.get('/api/buses', async (req, res) => {
         fetchedAt: new Date().toISOString(),
         feeds: {
           vehicle_positions: {
-            success: vehicleResult.success,
-            entities: vehicleResult.success ? vehicleResult.data.entity?.length || 0 : 0,
-            url: vehicleResult.url
+            success: enhancedVehicleResult.success,
+            entities: enhancedVehicleResult.success ? enhancedVehicleResult.data.entity?.length || 0 : 0,
+            virtual_vehicles: enhancedVehicleResult.data?.metadata?.virtual_vehicles || 0,
+            url: enhancedVehicleResult.url
           },
           trip_updates: {
             success: tripResult.success,
@@ -210,8 +312,8 @@ app.get('/api/buses', async (req, res) => {
     };
     
     // Add successful feeds to response
-    if (vehicleResult.success) {
-      response.data.vehicle_positions = vehicleResult.data;
+    if (enhancedVehicleResult.success) {
+      response.data.vehicle_positions = enhancedVehicleResult.data;
     }
     
     if (tripResult.success) {
@@ -224,7 +326,7 @@ app.get('/api/buses', async (req, res) => {
     
     // Add any errors
     const errors = [];
-    if (!vehicleResult.success) errors.push(`Vehicle positions: ${vehicleResult.error}`);
+    if (!enhancedVehicleResult.success) errors.push(`Vehicle positions: ${enhancedVehicleResult.error}`);
     if (!tripResult.success) errors.push(`Trip updates: ${tripResult.error}`);
     if (!alertsResult.success) errors.push(`Service alerts: ${alertsResult.error}`);
     
@@ -243,6 +345,78 @@ app.get('/api/buses', async (req, res) => {
   }
 });
 
+// ====== VIRTUAL VEHICLE ENDPOINTS ======
+
+// Debug endpoint for virtual vehicles
+app.get('/api/debug_virtual', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    // Load schedule
+    await scheduleLoader.loadSchedule(operatorId);
+    
+    // Get trip updates
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    const tripsWithoutVehicles = [];
+    tripResult.data?.entity?.forEach((trip, index) => {
+      if (trip.tripUpdate && !trip.tripUpdate.vehicle?.id) {
+        tripsWithoutVehicles.push({
+          index,
+          tripId: trip.tripUpdate.trip?.tripId,
+          routeId: trip.tripUpdate.trip?.routeId,
+          stopCount: trip.tripUpdate.stopTimeUpdate?.length || 0,
+          startTime: trip.tripUpdate.trip?.startTime,
+          vehiclePresent: !!trip.tripUpdate.vehicle?.id
+        });
+      }
+    });
+    
+    res.json({
+      totalTrips: tripResult.data?.entity?.length || 0,
+      tripsWithoutVehicles: tripsWithoutVehicles.length,
+      trips: tripsWithoutVehicles,
+      virtualVehiclesCreated: virtualVehicleManager.getVirtualVehicleCount(),
+      activeVirtualVehicles: virtualVehicleManager.getAllVirtualVehicles().map(v => ({
+        tripId: v.vehicle?.trip?.tripId,
+        routeId: v.vehicle?.trip?.routeId,
+        position: v.vehicle?.position
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cleanup endpoint
+app.get('/api/cleanup_virtual', (req, res) => {
+  const removed = virtualVehicleManager.cleanupOldVehicles();
+  res.json({
+    status: 'cleaned',
+    removed_count: removed,
+    remaining_virtual: virtualVehicleManager.getVirtualVehicleCount(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Virtual vehicles info
+app.get('/api/virtual_info', (req, res) => {
+  const virtualVehicles = virtualVehicleManager.getAllVirtualVehicles();
+  
+  res.json({
+    virtual_vehicles_count: virtualVehicles.length,
+    virtual_vehicles: virtualVehicles.map(v => ({
+      id: v.id,
+      trip_id: v.vehicle?.trip?.tripId,
+      route_id: v.vehicle?.trip?.routeId,
+      label: v.vehicle?.vehicle?.label,
+      position: v.vehicle?.position,
+      last_updated: new Date(v.lastUpdated).toISOString()
+    })),
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ====== HEALTH AND INFO ENDPOINTS ======
 
 // Health check endpoint
@@ -254,7 +428,8 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       feedsAvailable: result.success,
       protoLoaded: root !== null,
-      defaultOperator: DEFAULT_OPERATOR_ID
+      defaultOperator: DEFAULT_OPERATOR_ID,
+      virtualSystem: 'active'
     });
   } catch (error) {
     res.status(500).json({
@@ -269,14 +444,14 @@ app.get('/api/health', async (req, res) => {
 app.get('/api/info', (req, res) => {
   res.json({
     api: {
-      name: 'BC Transit GTFS-RT Proxy',
-      version: '2.0',
-      description: 'Real-time bus data for BC Transit systems'
+      name: 'BC Transit GTFS-RT Proxy with Virtual Vehicles',
+      version: '3.0',
+      description: 'Real-time bus data for BC Transit systems with virtual vehicle support'
     },
     endpoints: {
       combined: {
         path: '/api/buses',
-        description: 'All feeds combined',
+        description: 'All feeds combined with virtual vehicles',
         parameters: {
           operatorId: 'Optional. Default: 36 (Revelstoke). Try: 36, 47, 48'
         }
@@ -285,6 +460,11 @@ app.get('/api/info', (req, res) => {
         vehicle_positions: '/api/vehicle_positions?operatorId=36',
         trip_updates: '/api/trip_updates?operatorId=36',
         service_alerts: '/api/service_alerts?operatorId=36'
+      },
+      virtual_vehicles: {
+        debug: '/api/debug_virtual',
+        info: '/api/virtual_info',
+        cleanup: '/api/cleanup_virtual'
       },
       utility: {
         health: '/api/health',
@@ -297,9 +477,15 @@ app.get('/api/info', (req, res) => {
       '48': 'Victoria'
     },
     feeds: {
-      vehicleupdates: 'Real-time vehicle positions and status',
+      vehicleupdates: 'Real-time vehicle positions and status (with virtual vehicles)',
       tripupdates: 'Trip predictions and schedule updates',
       alerts: 'Service alerts and notifications'
+    },
+    virtual_vehicles: {
+      enabled: true,
+      description: 'Creates ghost buses for scheduled trips without real-time tracking',
+      identifier: 'VIRTUAL_{TRIP_ID}_{TIMESTAMP}',
+      flag: 'vehicle.vehicle.is_virtual: true'
     }
   });
 });
@@ -310,7 +496,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>🚌 BC Transit GTFS-RT Proxy</title>
+      <title>🚌 BC Transit GTFS-RT Proxy with Virtual Vehicles</title>
       <style>
         body { 
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
@@ -328,6 +514,10 @@ app.get('/', (req, res) => {
           border-left: 4px solid #3498db; 
           border-radius: 4px;
         }
+        .ghost-endpoint { 
+          background: #f0f8ff; 
+          border-left: 4px solid #7b68ee;
+        }
         code { 
           background: #e8f4f8; 
           padding: 2px 6px; 
@@ -337,17 +527,24 @@ app.get('/', (req, res) => {
         .operator { display: inline-block; background: #e8f6f3; padding: 4px 8px; margin: 2px; border-radius: 3px; }
         a { color: #2980b9; text-decoration: none; }
         a:hover { text-decoration: underline; }
+        .ghost { color: #7b68ee; font-weight: bold; }
+        .note { background: #fffacd; padding: 10px; border-radius: 5px; border-left: 3px solid #ffd700; }
       </style>
     </head>
     <body>
-      <h1>🚌 BC Transit GTFS-RT Proxy Server</h1>
-      <p>Real-time BC Transit data with support for multiple operators</p>
+      <h1>👻🚌 BC Transit Proxy with Virtual Vehicles</h1>
+      <p>Real-time BC Transit data with virtual (ghost) buses for scheduled trips without GPS tracking</p>
+      
+      <div class="note">
+        <strong>✨ New Feature:</strong> Virtual vehicles automatically appear as ghost buses for scheduled trips that don't have real-time tracking.
+        Look for <span class="ghost">"is_virtual": true</span> in the vehicle data.
+      </div>
       
       <h2>📡 Available Endpoints:</h2>
       
       <div class="endpoint">
         <strong>GET <code>/api/buses</code></strong>
-        <p>Get all real-time feeds combined (vehicle positions, trip updates, alerts)</p>
+        <p>Get all real-time feeds combined (vehicle positions, trip updates, alerts) with virtual vehicles</p>
         <p>Default: Revelstoke (36)</p>
         <p>Try: 
           <a href="/api/buses" target="_blank">Revelstoke</a> | 
@@ -358,20 +555,21 @@ app.get('/', (req, res) => {
       
       <div class="endpoint">
         <strong>GET <code>/api/vehicle_positions</code></strong>
-        <p>Vehicle positions and status only</p>
+        <p>Vehicle positions and status only (with virtual vehicles)</p>
+        <p>Add <code>?virtual=false</code> to disable virtual vehicles</p>
         <p><a href="/api/vehicle_positions" target="_blank">Try it</a></p>
       </div>
       
-      <div class="endpoint">
-        <strong>GET <code>/api/trip_updates</code></strong>
-        <p>Trip predictions and schedule updates</p>
-        <p><a href="/api/trip_updates" target="_blank">Try it</a></p>
+      <div class="endpoint ghost-endpoint">
+        <strong>GET <code>/api/debug_virtual</code></strong>
+        <p>Debug information about virtual vehicles</p>
+        <p><a href="/api/debug_virtual" target="_blank">Try it</a></p>
       </div>
       
-      <div class="endpoint">
-        <strong>GET <code>/api/service_alerts</code></strong>
-        <p>Service alerts and notifications</p>
-        <p><a href="/api/service_alerts" target="_blank">Try it</a></p>
+      <div class="endpoint ghost-endpoint">
+        <strong>GET <code>/api/virtual_info</code></strong>
+        <p>Information about active virtual vehicles</p>
+        <p><a href="/api/virtual_info" target="_blank">Try it</a></p>
       </div>
       
       <h2>🏙️ Supported Operators:</h2>
@@ -385,42 +583,71 @@ app.get('/', (req, res) => {
       <ul>
         <li><a href="/api/health" target="_blank">/api/health</a> - Server health check</li>
         <li><a href="/api/info" target="_blank">/api/info</a> - API documentation</li>
+        <li><a href="/api/cleanup_virtual" target="_blank">/api/cleanup_virtual</a> - Clean up old virtual vehicles</li>
       </ul>
       
+      <h2>👻 Virtual Vehicles:</h2>
+      <p>Virtual vehicles appear when:</p>
+      <ul>
+        <li>A trip is scheduled (in trip updates)</li>
+        <li>No real vehicle is transmitting GPS for that trip</li>
+        <li>Position is estimated from schedule data</li>
+      </ul>
+      <p>They appear in the feed with <code>"is_virtual": true</code> and can be styled as ghost buses on your map.</p>
+      
       <h2>📚 Usage Examples:</h2>
-      <pre><code>// Get Revelstoke buses (default)
+      <pre><code>// Get Revelstoke buses with virtual vehicles (default)
 fetch('/api/buses')
   .then(r => r.json())
-  .then(data => console.log(data))
+  .then(data => {
+    const allBuses = data.data.vehicle_positions.entity || [];
+    const realBuses = allBuses.filter(b => !b.vehicle?.vehicle?.is_virtual);
+    const ghostBuses = allBuses.filter(b => b.vehicle?.vehicle?.is_virtual);
+    console.log(realBuses.length + ' real buses, ' + ghostBuses.length + ' ghost buses');
+  })
 
-// Get Kelowna vehicle positions
-fetch('/api/vehicle_positions?operatorId=47')
+// Get vehicle positions without virtual vehicles
+fetch('/api/vehicle_positions?virtual=false')
   .then(r => r.json())
   .then(data => console.log(data))
 
-// Get Victoria alerts
-fetch('/api/service_alerts?operatorId=48')
+// Debug virtual vehicle system
+fetch('/api/debug_virtual')
   .then(r => r.json())
-  .then(data => console.log(data))</code></pre>
+  .then(data => console.log('Trips needing ghost buses:', data.tripsWithoutVehicles))</code></pre>
     </body>
     </html>
   `);
 });
 
-import virtualUpdater from './virtual-updater.js';
-
-// Start the virtual vehicle updater when proto is loaded
-async function initializeServer() {
-  await loadProto();
-  virtualUpdater.start();
-  
-  // Cleanup on exit
-  process.on('SIGTERM', () => {
-    virtualUpdater.stop();
-    process.exit(0);
-  });
+// Initialize virtual vehicle system
+async function initializeVirtualSystem() {
+  try {
+    console.log('🚀 Initializing virtual vehicle system...');
+    
+    // Start virtual vehicle updater if available
+    if (virtualUpdater && typeof virtualUpdater.start === 'function') {
+      virtualUpdater.start();
+      console.log('✅ Virtual vehicle updater started');
+    }
+    
+    // Cleanup on exit
+    process.on('SIGTERM', () => {
+      console.log('🛑 Shutting down virtual vehicle system...');
+      if (virtualUpdater && typeof virtualUpdater.stop === 'function') {
+        virtualUpdater.stop();
+      }
+      process.exit(0);
+    });
+    
+    console.log('✅ Virtual vehicle system ready');
+  } catch (error) {
+    console.error('❌ Failed to initialize virtual vehicle system:', error);
+  }
 }
 
-initializeServer().catch(console.error);
+// Call initialization
+initializeVirtualSystem().catch(console.error);
+
 // Export for Vercel
 export default app;
