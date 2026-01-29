@@ -15,7 +15,6 @@ class VirtualVehicleManager {
     };
     this.currentMode = this.MODE.SUBS_ONLY; // Default mode
   }
-
   // Set the virtual bus mode
   setMode(mode) {
     if (Object.values(this.MODE).includes(mode)) {
@@ -25,7 +24,6 @@ class VirtualVehicleManager {
     }
     return false;
   }
-
   // Get virtual vehicles based on current mode
   getVirtualVehicles(tripUpdates, scheduleData, realVehicleIds = new Set()) {
     switch (this.currentMode) {
@@ -39,7 +37,6 @@ class VirtualVehicleManager {
         return [];
     }
   }
-
   // MODE 1: All scheduled trips as virtual (for testing/debugging)
   generateAllVirtualVehicles(tripUpdates, scheduleData) {
     const virtualVehicles = [];
@@ -65,7 +62,6 @@ class VirtualVehicleManager {
     console.log(`👻 ALL VIRTUAL mode: Created ${virtualVehicles.length} virtual buses`);
     return virtualVehicles;
   }
-
   // MODE 2: Only virtual buses for missing real buses
   generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
     const virtualVehicles = [];
@@ -93,7 +89,7 @@ class VirtualVehicleManager {
     });
     activeTrips.forEach((activeTrip) => {
       const { trip, stopTimes, hasRealVehicle, tripVehicleId } = activeTrip;
-      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId);
+      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId) || realVehicleIds.has(trip.tripId);  // NEW: extra check for tripId
       if (!hasRealVehicle && !isRealVehicleTracked) {
         subCount++;
         const virtualVehicle = this.createVirtualVehicle(
@@ -104,12 +100,13 @@ class VirtualVehicleManager {
           'Substitute'
         );
         if (virtualVehicle) virtualVehicles.push(virtualVehicle);
+      } else {
+        console.log(`Skipping virtual for tracked trip ${trip.tripId}`);
       }
     });
     console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses for ${activeTrips.length} active trips`);
     return virtualVehicles;
   }
-
   isTripCurrentlyActive(stopTimes, currentTimeSec) {
     if (stopTimes.length === 0) return false;
     const firstStop = stopTimes[0];
@@ -120,7 +117,6 @@ class VirtualVehicleManager {
     const buffer = 300; // 5 min buffer
     return currentTimeSec >= (startTime - buffer) && currentTimeSec <= (endTime + buffer);
   }
-
   isTripInTimeWindow(stopTimes, currentTimeSec, windowSeconds) {
     if (stopTimes.length === 0) return false;
     const firstStop = stopTimes[0];
@@ -132,7 +128,6 @@ class VirtualVehicleManager {
            Math.abs(currentTimeSec - endTime) <= windowSeconds ||
            (currentTimeSec >= startTime && currentTimeSec <= endTime);
   }
-
   createVirtualVehicle(trip, stopTimes, scheduleData, vehicleId, modeType) {
     const currentTimeSec = Math.floor(Date.now() / 1000);
     const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
@@ -192,7 +187,6 @@ class VirtualVehicleManager {
       modeType: modeType
     };
   }
-
   findCurrentStopAndProgress(stopTimes, currentTimeSec) {
     for (let i = 0; i < stopTimes.length; i++) {
       const currentStop = stopTimes[i];
@@ -218,7 +212,6 @@ class VirtualVehicleManager {
     const lastStop = stopTimes[stopTimes.length - 1];
     return { currentStop: lastStop, nextStop: null, progress: 0 };
   }
-
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData) {
     if (!scheduleData || !scheduleData.stops) {
       console.warn('No scheduleData.stops available for position calculation');
@@ -243,7 +236,6 @@ class VirtualVehicleManager {
     }
     return { latitude: lat, longitude: lon, bearing: 0, speed: 0 };
   }
-
   // Optional: Full shape interpolation (call this instead of stop-to-stop if shapes loaded)
   calculatePositionAlongShape(tripId, progress, scheduleData) {
     const trip = scheduleData.tripsMap?.[tripId];
@@ -263,7 +255,6 @@ class VirtualVehicleManager {
     const bearing = this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon);
     return { latitude: lat, longitude: lon, bearing, speed: 25 };
   }
-
   calculateBearing(lat1, lon1, lat2, lon2) {
     const φ1 = lat1 * Math.PI / 180;
     const φ2 = lat2 * Math.PI / 180;
@@ -273,13 +264,11 @@ class VirtualVehicleManager {
     const θ = Math.atan2(y, x);
     return (θ * 180 / Math.PI + 360) % 360;
   }
-
   getRouteDisplayName(routeId) {
     if (!routeId) return 'Bus';
     const match = routeId.match(/^(\d+)/);
     return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
   }
-
   updateVirtualPositions() {
     const now = Date.now();
     let updatedCount = 0;
@@ -293,7 +282,6 @@ class VirtualVehicleManager {
     }
     return updatedCount;
   }
-
   updateVehiclePosition(vehicle) {
     if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
       console.log(`Removing virtual ${vehicle.id} - no stop times`);
@@ -335,7 +323,6 @@ class VirtualVehicleManager {
     // Optional: log for debugging
     // console.log(`Updated virtual ${vehicle.id}: seq=${currentStop.stopSequence}, progress=${progress.toFixed(2)}, pos=${position.latitude.toFixed(5)},${position.longitude.toFixed(5)}`);
   }
-
   cleanupOldVehicles(maxAgeMinutes = 60) { // Reduced from 120 to 60 minutes for safety
     const cutoff = Date.now() - (maxAgeMinutes * 60 * 1000);
     let removed = 0;
@@ -352,8 +339,8 @@ class VirtualVehicleManager {
     }
     return removed;
   }
-}  // ← Class ends here with semicolon
+};
 
-// Singleton instance (outside the class)
+// Singleton instance
 const virtualVehicleManager = new VirtualVehicleManager();
 export default virtualVehicleManager;
