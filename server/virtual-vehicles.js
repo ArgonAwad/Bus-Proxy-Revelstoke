@@ -1,5 +1,6 @@
 // virtual-vehicles.js
 import { DateTime } from 'luxon';
+import scheduleLoader from './schedule-loader.js';
 
 class VirtualVehicleManager {
   constructor() {
