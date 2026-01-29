@@ -353,16 +353,38 @@ class VirtualVehicleManager {
     return updatedCount;
   }
 
-  updateVehiclePosition(vehicle) {
-    if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) return;
+   updateVehiclePosition(vehicle) {
+    if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
+      console.log(`Removing virtual ${vehicle.id} - no stop times`);
+      this.virtualVehicles.delete(vehicle.id);
+      return;
+    }
 
     const currentTimeSec = Math.floor(Date.now() / 1000);
     const currentStopInfo = this.findCurrentStopAndProgress(vehicle.stopTimes, currentTimeSec);
 
-    if (!currentStopInfo) return;
+    if (!currentStopInfo) {
+      console.log(`Removing virtual ${vehicle.id} - no active stop segment`);
+      this.virtualVehicles.delete(vehicle.id);
+      return;
+    }
 
     const { currentStop, nextStop, progress } = currentStopInfo;
 
+    // NEW: Check if the trip has ended (no next stop + current time past final arrival)
+    if (!nextStop) {
+      const lastStop = vehicle.stopTimes[vehicle.stopTimes.length - 1];
+      const lastArrivalTime = lastStop.arrival?.time || lastStop.departure?.time || 0;
+      const bufferSeconds = 600; // 10 minutes buffer after final arrival (adjustable)
+
+      if (currentTimeSec > lastArrivalTime + bufferSeconds) {
+        console.log(`Removing completed virtual bus ${vehicle.id} (trip ended at ${lastArrivalTime}, current ${currentTimeSec})`);
+        this.virtualVehicles.delete(vehicle.id);
+        return;
+      }
+    }
+
+    // Normal update for active trip
     vehicle.vehicle.currentStopSequence = currentStop.stopSequence || 1;
     vehicle.vehicle.stopId = currentStop.stopId;
     vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
@@ -377,35 +399,30 @@ class VirtualVehicleManager {
 
     vehicle.currentStop = currentStop;
     vehicle.nextStop = nextStop;
+
+    // Optional: log for debugging
+    // console.log(`Updated virtual ${vehicle.id}: seq=${currentStop.stopSequence}, progress=${progress.toFixed(2)}, pos=${position.latitude.toFixed(5)},${position.longitude.toFixed(5)}`);
   }
 
-  cleanupOldVehicles(maxAgeMinutes = 120) {
+  cleanupOldVehicles(maxAgeMinutes = 60) {  // Reduced from 120 to 60 minutes for safety
     const cutoff = Date.now() - (maxAgeMinutes * 60 * 1000);
     let removed = 0;
 
-    for (const [tripId, vehicle] of this.virtualVehicles) {
+    for (const [key, vehicle] of this.virtualVehicles) {
       if (vehicle.lastUpdated < cutoff) {
-        this.virtualVehicles.delete(tripId);
-        this.lastGenerated.delete(tripId);
+        console.log(`Age-based cleanup: removing stale virtual ${vehicle.id} (last updated ${new Date(vehicle.lastUpdated).toISOString()})`);
+        this.virtualVehicles.delete(key);
+        this.lastGenerated.delete(key);
         removed++;
       }
     }
 
+    if (removed > 0) {
+      console.log(`Cleaned up ${removed} old virtual vehicles`);
+    }
+
     return removed;
   }
-
-  setMaxVirtualBuses(max) {
-    this.maxVirtualBuses = max;
-  }
-
-  getVirtualVehicleCount() {
-    return this.virtualVehicles.size;
-  }
-
-  getAllVirtualVehicles() {
-    return Array.from(this.virtualVehicles.values());
-  }
-}
 
 // Singleton instance
 const virtualVehicleManager = new VirtualVehicleManager();
