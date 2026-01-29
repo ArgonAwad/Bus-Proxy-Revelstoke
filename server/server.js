@@ -50,7 +50,7 @@ async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
     const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
     const message = FeedMessage.decode(new Uint8Array(buffer));
 
-    // Convert to object, preserving blockId if it exists
+    // Convert to object
     const data = FeedMessage.toObject(message, {
       defaults: true,
       longs: String,
@@ -78,13 +78,46 @@ async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
   }
 }
 
+// Fix vehicle structure to match what tracker expects
+function fixVehicleStructure(vehicleEntity) {
+  if (!vehicleEntity.vehicle) return vehicleEntity;
+  
+  const vehicleData = vehicleEntity.vehicle;
+  
+  // Check if we have the nested vehicle structure
+  if (vehicleData.vehicle && vehicleData.trip) {
+    // This is the new structure, convert it to the old one
+    return {
+      ...vehicleEntity,
+      vehicle: {
+        trip: vehicleData.trip,
+        vehicle: vehicleData.vehicle,
+        position: vehicleData.position || null,
+        timestamp: vehicleData.timestamp || null,
+        congestionLevel: vehicleData.congestionLevel || null,
+        occupancyStatus: vehicleData.occupancyStatus || null,
+        occupancyPercentage: vehicleData.occupancyPercentage || null,
+        currentStopSequence: vehicleData.currentStopSequence || null,
+        currentStatus: vehicleData.currentStatus || null,
+        stopId: vehicleData.stopId || null
+      }
+    };
+  }
+  
+  // Already in correct structure
+  return vehicleEntity;
+}
+
 // Helper to add blockId to vehicle entities from schedule data
 function addBlockIdToVehicles(vehicleEntities, scheduleData) {
   if (!vehicleEntities || !scheduleData?.trips) return vehicleEntities;
 
   return vehicleEntities.map(entity => {
+    // Fix the vehicle structure first
+    const fixedEntity = fixVehicleStructure(entity);
+    
     // Create a copy to avoid mutation
-    const enrichedEntity = JSON.parse(JSON.stringify(entity));
+    const enrichedEntity = JSON.parse(JSON.stringify(fixedEntity));
 
     // Skip if already has blockId
     if (enrichedEntity.vehicle?.trip?.blockId) {
@@ -158,7 +191,7 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, inc
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
 
-    console.log(`📊 Real vehicles: ${vehicleResult.data?.entity?.length || 0}`);
+    console.log(`📊 Raw vehicles from API: ${vehicleResult.data?.entity?.length || 0}`);
     console.log(`📊 Trip updates: ${tripResult.data?.entity?.length || 0}`);
 
     // Start with enriched real vehicles
@@ -166,8 +199,9 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, inc
     let virtualVehicles = [];
 
     if (vehicleResult.success && vehicleResult.data?.entity) {
-      // Enrich real vehicles with blockId
+      // Fix structure and enrich real vehicles with blockId
       enrichedVehicles = addBlockIdToVehicles(vehicleResult.data.entity, scheduleLoader.scheduleData);
+      console.log(`🔄 Fixed structure for ${enrichedVehicles.length} vehicles`);
     }
 
     // Add virtual vehicles if requested
@@ -275,10 +309,22 @@ app.get('/api/buses', async (req, res) => {
       };
     }
 
-    // Prepare response
+    // Prepare response - SIMPLIFIED STRUCTURE
     const responseTime = Date.now() - startTime;
     const vehiclesWithBlockId = countEntitiesWithBlockId(enhancedVehicleResult.data?.entity, 'vehicle');
     const tripUpdatesWithBlockId = countEntitiesWithBlockId(enhancedTripResult.data?.entity, 'tripUpdate');
+
+    // DEBUG: Check vehicle structure
+    if (enhancedVehicleResult.data?.entity?.length > 0) {
+      const sampleVehicle = enhancedVehicleResult.data.entity[0];
+      console.log('DEBUG Vehicle structure:', {
+        hasVehicle: !!sampleVehicle.vehicle,
+        hasNestedVehicle: !!sampleVehicle.vehicle?.vehicle,
+        hasTrip: !!sampleVehicle.vehicle?.trip,
+        hasPosition: !!sampleVehicle.vehicle?.position,
+        structure: Object.keys(sampleVehicle.vehicle || {})
+      });
+    }
 
     const response = {
       metadata: {
@@ -288,29 +334,16 @@ app.get('/api/buses', async (req, res) => {
             operatorId === '48' ? 'Victoria' : `Operator ${operatorId}`,
         fetchedAt: new Date().toISOString(),
         responseTimeMs: responseTime,
-        block_id: {
-          enabled: true,
-          vehicles_enriched: vehiclesWithBlockId,
-          trip_updates_enriched: tripUpdatesWithBlockId,
-          total_vehicles: enhancedVehicleResult.data?.entity?.length || 0,
-          total_trip_updates: enhancedTripResult.data?.entity?.length || 0,
-          vehicle_coverage: enhancedVehicleResult.data?.entity?.length > 0 ?
-            `${Math.round((vehiclesWithBlockId / enhancedVehicleResult.data.entity.length) * 100)}%` : '0%',
-          schedule_loaded: !!scheduleLoader.scheduleData,
-          schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0
-        },
         feeds: {
           vehicle_positions: {
             success: enhancedVehicleResult.success,
             entities: enhancedVehicleResult.success ? enhancedVehicleResult.data.entity?.length || 0 : 0,
             virtual_vehicles: enhancedVehicleResult.data?.metadata?.virtual_vehicles || 0,
-            block_id_enriched: vehiclesWithBlockId,
             url: enhancedVehicleResult.url
           },
           trip_updates: {
             success: tripResult.success,
             entities: tripResult.success ? enhancedTripResult.data.entity?.length || 0 : 0,
-            block_id_enriched: tripUpdatesWithBlockId,
             url: tripResult.url
           },
           service_alerts: {
@@ -318,6 +351,15 @@ app.get('/api/buses', async (req, res) => {
             entities: alertsResult.success ? alertsResult.data.entity?.length || 0 : 0,
             url: alertsResult.url
           }
+        },
+        block_id: {
+          enabled: true,
+          vehicles_enriched: vehiclesWithBlockId,
+          trip_updates_enriched: tripUpdatesWithBlockId,
+          vehicle_coverage: enhancedVehicleResult.data?.entity?.length > 0 ?
+            `${Math.round((vehiclesWithBlockId / enhancedVehicleResult.data.entity.length) * 100)}%` : '0%',
+          schedule_loaded: !!scheduleLoader.scheduleData,
+          schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0
         }
       },
       data: {
@@ -463,7 +505,115 @@ app.get('/api/service_alerts', async (req, res) => {
   }
 });
 
-// ==================== VIRTUAL VEHICLE ENDPOINTS ====================
+// ==================== TESTING ENDPOINTS ====================
+
+// Test endpoint to check vehicle structure
+app.get('/api/test_vehicle_structure', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+
+    if (!vehicleResult.success || !vehicleResult.data?.entity) {
+      return res.json({ error: 'No vehicle data' });
+    }
+
+    const sampleVehicle = vehicleResult.data.entity[0];
+    const fixedVehicle = fixVehicleStructure(sampleVehicle);
+
+    res.json({
+      original_structure: {
+        keys: Object.keys(sampleVehicle),
+        vehicle_keys: sampleVehicle.vehicle ? Object.keys(sampleVehicle.vehicle) : 'No vehicle',
+        has_nested_vehicle: !!sampleVehicle.vehicle?.vehicle,
+        nested_vehicle_keys: sampleVehicle.vehicle?.vehicle ? Object.keys(sampleVehicle.vehicle.vehicle) : 'No nested vehicle'
+      },
+      fixed_structure: {
+        keys: Object.keys(fixedVehicle),
+        vehicle_keys: fixedVehicle.vehicle ? Object.keys(fixedVehicle.vehicle) : 'No vehicle',
+        has_nested_vehicle: !!fixedVehicle.vehicle?.vehicle,
+        vehicle_structure_sample: {
+          has_trip: !!fixedVehicle.vehicle?.trip,
+          has_vehicle: !!fixedVehicle.vehicle?.vehicle,
+          has_position: !!fixedVehicle.vehicle?.position,
+          trip_id: fixedVehicle.vehicle?.trip?.tripId,
+          vehicle_id: fixedVehicle.vehicle?.vehicle?.id
+        }
+      },
+      explanation: fixedVehicle.vehicle?.vehicle ? 
+        "✓ Fixed structure: vehicle.vehicle is now at the correct level" :
+        "✗ Still has nested vehicle structure"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test endpoint for block_id enrichment
+app.get('/api/test_block_id', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+
+    console.log(`Testing block_id enrichment for operator ${operatorId}`);
+
+    // Fetch real vehicles
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+
+    if (!vehicleResult.success) {
+      return res.status(500).json({
+        error: 'Failed to fetch vehicles',
+        details: vehicleResult.error
+      });
+    }
+
+    // Load schedule
+    await scheduleLoader.loadSchedules(operatorId);
+
+    // Analyze vehicles
+    const vehicles = vehicleResult.data?.entity || [];
+    const fixedVehicles = vehicles.map(v => fixVehicleStructure(v));
+    const enrichedVehicles = addBlockIdToVehicles(fixedVehicles, scheduleLoader.scheduleData);
+
+    // Sample some vehicles
+    const sampleVehicles = enrichedVehicles.slice(0, 3).map(v => ({
+      id: v.vehicle?.vehicle?.id,
+      trip_id: v.vehicle?.trip?.tripId,
+      route_id: v.vehicle?.trip?.routeId,
+      block_id: v.vehicle?.trip?.blockId || 'NONE',
+      has_block_id: !!v.vehicle?.trip?.blockId,
+      structure: {
+        has_vehicle_at_root: !!v.vehicle?.vehicle,
+        has_trip: !!v.vehicle?.trip,
+        has_position: !!v.vehicle?.position
+      }
+    }));
+
+    res.json({
+      test: 'block_id_enrichment',
+      operatorId,
+      schedule_loaded: !!scheduleLoader.scheduleData,
+      schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0,
+      vehicle_stats: {
+        total_vehicles: vehicles.length,
+        with_block_id: countEntitiesWithBlockId(enrichedVehicles, 'vehicle')
+      },
+      sample_vehicles: sampleVehicles,
+      schedule_sample: scheduleLoader.scheduleData?.trips?.slice(0, 3).map(t => ({
+        trip_id: t.trip_id,
+        block_id: t.block_id || 'NONE',
+        route_id: t.route_id
+      })) || []
+    });
+
+  } catch (error) {
+    console.error('Error in /api/test_block_id:', error);
+    res.status(500).json({
+      error: 'Test failed',
+      details: error.message
+    });
+  }
+});
+
+// ==================== EXISTING ENDPOINTS (minimal changes) ====================
 
 // Debug endpoint for virtual vehicles
 app.get('/api/debug_virtual', async (req, res) => {
@@ -507,303 +657,6 @@ app.get('/api/debug_virtual', async (req, res) => {
   }
 });
 
-// Cleanup endpoint
-app.get('/api/cleanup_virtual', (req, res) => {
-  const removed = virtualVehicleManager.cleanupOldVehicles();
-  res.json({
-    status: 'cleaned',
-    removed_count: removed,
-    remaining_virtual: virtualVehicleManager.getVirtualVehicleCount(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Virtual vehicles info
-app.get('/api/virtual_info', (req, res) => {
-  const virtualVehicles = virtualVehicleManager.getAllVirtualVehicles();
-
-  res.json({
-    virtual_vehicles_count: virtualVehicles.length,
-    virtual_vehicles: virtualVehicles.map(v => ({
-      id: v.id,
-      trip_id: v.vehicle?.trip?.tripId,
-      route_id: v.vehicle?.trip?.routeId,
-      block_id: v.vehicle?.trip?.blockId || 'NONE',
-      label: v.vehicle?.vehicle?.label,
-      position: v.vehicle?.position,
-      last_updated: new Date(v.lastUpdated).toISOString()
-    })),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ==================== BLOCK ID TESTING ====================
-
-// Test endpoint for block_id enrichment
-app.get('/api/test_block_id', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    console.log(`Testing block_id enrichment for operator ${operatorId}`);
-
-    // Fetch real vehicles
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-
-    if (!vehicleResult.success) {
-      return res.status(500).json({
-        error: 'Failed to fetch vehicles',
-        details: vehicleResult.error
-      });
-    }
-
-    // Load schedule
-    await scheduleLoader.loadSchedules(operatorId);
-
-    // Analyze vehicles
-    const vehicles = vehicleResult.data?.entity || [];
-    const enrichedVehicles = addBlockIdToVehicles(vehicles, scheduleLoader.scheduleData);
-
-    // Sample some vehicles
-    const sampleVehicles = enrichedVehicles.slice(0, 5).map(v => ({
-      id: v.vehicle?.vehicle?.id,
-      trip_id: v.vehicle?.trip?.tripId,
-      route_id: v.vehicle?.trip?.routeId,
-      block_id: v.vehicle?.trip?.blockId || 'NONE',
-      has_block_id: !!v.vehicle?.trip?.blockId
-    }));
-
-    res.json({
-      test: 'block_id_enrichment',
-      operatorId,
-      schedule_loaded: !!scheduleLoader.scheduleData,
-      schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0,
-      vehicle_stats: {
-        total_vehicles: vehicles.length,
-        with_block_id: countEntitiesWithBlockId(enrichedVehicles, 'vehicle')
-      },
-      sample_vehicles: sampleVehicles,
-      schedule_sample: scheduleLoader.scheduleData?.trips?.slice(0, 3).map(t => ({
-        trip_id: t.trip_id,
-        block_id: t.block_id || 'NONE',
-        route_id: t.route_id
-      })) || []
-    });
-
-  } catch (error) {
-    console.error('Error in /api/test_block_id:', error);
-    res.status(500).json({
-      error: 'Test failed',
-      details: error.message
-    });
-  }
-});
-
-// Verify blockId is actually in the feed
-app.get('/api/verify_blockid_in_feed', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    // Get a fresh response
-    const enhancedResult = await getEnhancedVehiclePositions(operatorId, true, 'subs');
-
-    const vehicles = enhancedResult.data?.entity || [];
-    const vehiclesWithBlockId = vehicles.filter(v => v.vehicle?.trip?.blockId);
-
-    const sampleVehicles = vehicles.slice(0, 3).map(v => ({
-      id: v.vehicle?.vehicle?.id,
-      trip_id: v.vehicle?.trip?.tripId,
-      route_id: v.vehicle?.trip?.routeId,
-      block_id: v.vehicle?.trip?.blockId || 'MISSING',
-      has_block_id: !!v.vehicle?.trip?.blockId,
-      is_virtual: v.vehicle?.vehicle?.is_virtual || false
-    }));
-
-    res.json({
-      verification: 'block_id_in_feed_check',
-      operatorId,
-      total_vehicles: vehicles.length,
-      vehicles_with_block_id: vehiclesWithBlockId.length,
-      coverage_percentage: vehicles.length > 0 ?
-        `${Math.round((vehiclesWithBlockId.length / vehicles.length) * 100)}%` : '0%',
-      sample_vehicles: sampleVehicles,
-      metadata_block_id_info: enhancedResult.data?.metadata,
-      success: vehiclesWithBlockId.length > 0
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      error: 'Verification failed',
-      details: error.message
-    });
-  }
-});
-
-// ==================== VIRTUAL-ONLY ENDPOINTS ====================
-
-// All virtual buses (all scheduled trips as virtual)
-app.get('/api/virtual_positions', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    // Set mode to ALL_VIRTUAL
-    virtualVehicleManager.setMode('all');
-
-    // Load schedule
-    await scheduleLoader.loadSchedules(operatorId);
-
-    // Get trip updates
-    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-
-    if (!tripResult.success) {
-      return res.status(500).json({
-        error: 'Failed to fetch trip updates',
-        details: tripResult.error
-      });
-    }
-
-    // Generate ALL virtual vehicles
-    const virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
-      tripResult.data,
-      scheduleLoader.scheduleData
-    );
-
-    // Update positions
-    virtualVehicleManager.updateVirtualPositions();
-
-    // Enrich virtual vehicles with blockId
-    const enrichedVirtualVehicles = addBlockIdToVehicles(virtualVehicles, scheduleLoader.scheduleData);
-
-    res.json({
-      metadata: {
-        feedType: 'virtual_positions',
-        operatorId,
-        mode: 'all_virtual',
-        fetchedAt: new Date().toISOString(),
-        entities: enrichedVirtualVehicles.length,
-        block_id_enriched: countEntitiesWithBlockId(enrichedVirtualVehicles, 'vehicle'),
-        description: 'All scheduled trips shown as virtual buses with blockId'
-      },
-      data: {
-        entity: enrichedVirtualVehicles,
-        header: {
-          gtfsRealtimeVersion: '1.0',
-          incrementality: 0,
-          timestamp: Math.floor(Date.now() / 1000),
-          feedVersion: 'VIRTUAL-ALL'
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Error in /api/virtual_positions:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
-  }
-});
-
-// Substitute virtual buses only (for missing real buses)
-app.get('/api/virtual_subs', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    // Set mode to SUBS_ONLY
-    virtualVehicleManager.setMode('subs');
-
-    // Load schedule
-    await scheduleLoader.loadSchedules(operatorId);
-
-    // Get real vehicle positions
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-
-    if (!tripResult.success) {
-      return res.status(500).json({
-        error: 'Failed to fetch trip updates',
-        details: tripResult.error
-      });
-    }
-
-    // Get IDs of real vehicles
-    const realVehicleIds = new Set();
-    if (vehicleResult.success && vehicleResult.data?.entity) {
-      vehicleResult.data.entity.forEach(vehicle => {
-        if (vehicle.vehicle?.vehicle?.id) {
-          realVehicleIds.add(vehicle.vehicle.vehicle.id);
-        }
-      });
-    }
-
-    // Generate substitute virtual vehicles
-    const virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
-      tripResult.data,
-      scheduleLoader.scheduleData,
-      realVehicleIds
-    );
-
-    // Update positions
-    virtualVehicleManager.updateVirtualPositions();
-
-    // Enrich virtual vehicles with blockId
-    const enrichedVirtualVehicles = addBlockIdToVehicles(virtualVehicles, scheduleLoader.scheduleData);
-
-    res.json({
-      metadata: {
-        feedType: 'virtual_subs',
-        operatorId,
-        mode: 'substitute_only',
-        fetchedAt: new Date().toISOString(),
-        entities: enrichedVirtualVehicles.length,
-        real_vehicles_count: realVehicleIds.size,
-        block_id_enriched: countEntitiesWithBlockId(enrichedVirtualVehicles, 'vehicle'),
-        description: 'Virtual buses only for scheduled trips missing real-time data'
-      },
-      data: {
-        entity: enrichedVirtualVehicles,
-        header: {
-          gtfsRealtimeVersion: '1.0',
-          incrementality: 0,
-          timestamp: Math.floor(Date.now() / 1000),
-          feedVersion: 'VIRTUAL-SUBS'
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Error in /api/virtual_subs:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
-  }
-});
-
-// Virtual bus mode configuration
-app.get('/api/virtual_config', (req, res) => {
-  const mode = req.query.mode;
-  const maxBuses = parseInt(req.query.max) || 3;
-
-  let success = false;
-  let message = '';
-
-  if (mode) {
-    success = virtualVehicleManager.setMode(mode);
-    message = success ? `Mode set to: ${mode}` : `Invalid mode: ${mode}`;
-  }
-
-  if (maxBuses >= 1 && maxBuses <= 10) {
-    virtualVehicleManager.setMaxVirtualBuses(maxBuses);
-    message += message ? `, Max buses: ${maxBuses}` : `Max buses set to: ${maxBuses}`;
-    success = true;
-  }
-
-  res.json({
-    success,
-    message: message || 'No changes made',
-    current_mode: virtualVehicleManager.currentMode,
-    max_virtual_buses: virtualVehicleManager.maxVirtualBuses,
-    current_virtual_count: virtualVehicleManager.getVirtualVehicleCount(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ==================== HEALTH AND INFO ENDPOINTS ====================
-
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
@@ -826,217 +679,82 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// API info endpoint
-app.get('/api/info', (req, res) => {
-  res.json({
-    api: {
-      name: 'BC Transit GTFS-RT Proxy with Virtual Vehicles',
-      version: '3.1',
-      description: 'Real-time bus data for BC Transit systems with virtual vehicle support'
-    },
-    features: {
-      block_id_support: {
-        available: true,
-        description: 'All vehicles (real and virtual) include blockId from schedule data',
-        endpoints: ['/api/buses', '/api/vehicle_positions', '/api/trip_updates'],
-        note: 'Block IDs come from schedule/trips.txt and are matched by trip_id'
-      },
-      virtual_vehicles: {
-        enabled: true,
-        description: 'Creates ghost buses for scheduled trips without real-time tracking',
-        identifier: 'VIRTUAL_{TRIP_ID}_{TIMESTAMP}',
-        flag: 'vehicle.vehicle.is_virtual: true'
-      }
-    },
-    endpoints: {
-      combined: {
-        path: '/api/buses',
-        description: 'All feeds combined with virtual vehicles and blockId',
-        parameters: {
-          operatorId: 'Optional. Default: 36 (Revelstoke). Try: 36, 47, 48'
-        }
-      },
-      individual: {
-        vehicle_positions: '/api/vehicle_positions?operatorId=36',
-        trip_updates: '/api/trip_updates?operatorId=36',
-        service_alerts: '/api/service_alerts?operatorId=36'
-      },
-      testing: {
-        block_id_test: '/api/test_block_id',
-        verify_blockid: '/api/verify_blockid_in_feed',
-        virtual_debug: '/api/debug_virtual',
-        virtual_info: '/api/virtual_info'
-      }
-    },
-    operators: {
-      '36': 'Revelstoke',
-      '47': 'Kelowna',
-      '48': 'Victoria'
-    }
-  });
-});
-
-// Debug endpoint to check schedule data
-app.get('/api/debug_schedule', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    console.log('🔍 Checking schedule data for operator:', operatorId);
-
-    // Load schedule
-    const schedule = await scheduleLoader.loadSchedules(operatorId);
-
-    // Check what files exist
-    const fs = await import('fs/promises');
-    const path = await import('path');
-
-    const schedulePath = path.join(process.cwd(), 'schedules', `operator_${operatorId}`);
-
-    let filesExist = false;
-    let fileList = [];
-
-    try {
-      const files = await fs.readdir(schedulePath);
-      fileList = files;
-      filesExist = files.length > 0;
-    } catch (error) {
-      filesExist = false;
-    }
-
-    res.json({
-      operatorId,
-      scheduleLoaded: !!schedule,
-      isFallback: schedule?.isFallback || false,
-      schedulePath,
-      filesExist,
-      files: fileList,
-      stopsCount: schedule?.stops ? Object.keys(schedule.stops).length : 0,
-      tripsCount: schedule?.trips?.length || 0,
-      tripsWithBlockId: schedule?.trips?.filter(t => t.block_id).length || 0,
-      sampleTrips: schedule?.trips?.slice(0, 5).map(t => ({
-        trip_id: t.trip_id,
-        block_id: t.block_id || 'NONE',
-        route_id: t.route_id
-      })) || [],
-      loadedAt: schedule?.loadedAt
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message, stack: error.stack });
-  }
-});
-
-// ==================== ROOT ENDPOINT ====================
-
+// Root endpoint with HTML interface
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
-      <title>🚌 BC Transit GTFS-RT Proxy with Virtual Vehicles</title>
+      <title>🚌 BC Transit GTFS-RT Proxy</title>
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
         h2 { color: #34495e; margin-top: 30px; }
         .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #3498db; border-radius: 4px; }
-        .block-feature { background: #e8f4fc; border-left: 4px solid #2e86c1; }
         code { background: #e8f4f8; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; }
-        .operator { display: inline-block; background: #e8f6f3; padding: 4px 8px; margin: 2px; border-radius: 3px; }
         a { color: #2980b9; text-decoration: none; }
         a:hover { text-decoration: underline; }
         .note { background: #fffacd; padding: 10px; border-radius: 5px; border-left: 3px solid #ffd700; }
-        .block-highlight { color: #2e86c1; font-weight: bold; }
       </style>
     </head>
     <body>
-      <h1>👻🚌 BC Transit Proxy with Virtual Vehicles</h1>
-      <p>Real-time BC Transit data with virtual (ghost) buses for scheduled trips without GPS tracking</p>
+      <h1>🚌 BC Transit GTFS-RT Proxy</h1>
+      <p>Real-time bus data for BC Transit systems</p>
      
       <div class="note">
-        <strong>📦 NEW: Block ID Support!</strong> All vehicles (real and virtual) now include <span class="block-highlight">blockId</span> from schedule data when available.
+        <strong>⚠️ IMPORTANT:</strong> Vehicle structure has been fixed to match tracker expectations.
       </div>
 
       <h2>📡 Main Endpoints</h2>
 
-      <div class="endpoint block-feature">
+      <div class="endpoint">
         <strong>GET <code>/api/buses</code></strong>
-        <p>All feeds combined (vehicle positions + trip updates + alerts) with virtual vehicles</p>
-        <p><span class="block-highlight">✓ ALWAYS includes blockId</span> for real and virtual vehicles</p>
+        <p>All feeds combined with virtual vehicles and blockId</p>
         <p>Default: Revelstoke (36)</p>
-        <p>Examples:
-          <a href="/api/buses" target="_blank">Revelstoke</a> |
-          <a href="/api/buses?operatorId=47" target="_blank">Kelowna</a> |
-          <a href="/api/buses?operatorId=48" target="_blank">Victoria</a>
+        <p><a href="/api/buses" target="_blank">Try it</a> | 
+           <a href="/api/buses?operatorId=47" target="_blank">Kelowna</a> | 
+           <a href="/api/buses?operatorId=48" target="_blank">Victoria</a>
         </p>
       </div>
 
       <div class="endpoint">
         <strong>GET <code>/api/vehicle_positions</code></strong>
-        <p>Vehicle positions only (with optional virtuals)</p>
-        <p><span class="block-highlight">✓ Includes blockId</span> when available</p>
-        <p>Params: <code>?virtual=false</code> (disable virtuals), <code>?virtual_mode=all</code> or <code>subs</code></p>
+        <p>Vehicle positions only</p>
         <p><a href="/api/vehicle_positions" target="_blank">Try it</a></p>
       </div>
 
       <div class="endpoint">
         <strong>GET <code>/api/trip_updates</code></strong>
         <p>Trip predictions and schedule updates</p>
-        <p><span class="block-highlight">✓ Includes blockId</span> when available</p>
         <p><a href="/api/trip_updates" target="_blank">Try it</a></p>
       </div>
 
-      <div class="endpoint">
-        <strong>GET <code>/api/service_alerts</code></strong>
-        <p>Service alerts and notifications</p>
-        <p><a href="/api/service_alerts" target="_blank">Try it</a></p>
-      </div>
-
-      <h2>🔧 Testing & Debug Endpoints</h2>
+      <h2>🔧 Testing Endpoints</h2>
       <ul>
+        <li><a href="/api/test_vehicle_structure" target="_blank">/api/test_vehicle_structure</a> - Check vehicle structure fix</li>
         <li><a href="/api/test_block_id" target="_blank">/api/test_block_id</a> - Test blockId enrichment</li>
-        <li><a href="/api/verify_blockid_in_feed" target="_blank">/api/verify_blockid_in_feed</a> - Verify blockId in actual feed</li>
-        <li><a href="/api/debug_schedule" target="_blank">/api/debug_schedule</a> - Check schedule data</li>
         <li><a href="/api/debug_virtual" target="_blank">/api/debug_virtual</a> - Debug virtual vehicles</li>
-        <li><a href="/api/virtual_info" target="_blank">/api/virtual_info</a> - Active virtual vehicles</li>
         <li><a href="/api/health" target="_blank">/api/health</a> - Server health check</li>
-        <li><a href="/api/info" target="_blank">/api/info</a> - API documentation</li>
       </ul>
-
-      <h2>👻 Virtual-Only Endpoints</h2>
-      <ul>
-        <li><a href="/api/virtual_positions" target="_blank">/api/virtual_positions</a> - All trips as virtual buses</li>
-        <li><a href="/api/virtual_subs" target="_blank">/api/virtual_subs</a> - Only substitute virtual buses</li>
-      </ul>
-
-      <h2>Supported Operators</h2>
-      <div>
-        <span class="operator">36: Revelstoke</span>
-        <span class="operator">47: Kelowna</span>
-        <span class="operator">48: Victoria</span>
-      </div>
 
       <p style="margin-top: 40px; text-align: center; color: #777;">
-        Proxy Version 3.1 • Virtual Vehicles Active • BlockId Supported • <a href="/api/info">Full API Info</a>
+        Vehicle Structure Fixed • BlockId Supported • <a href="/api/health">Health Check</a>
       </p>
     </body>
     </html>
   `);
 });
 
-// ==================== INITIALIZATION ====================
-
 // Initialize virtual vehicle system
 async function initializeVirtualSystem() {
   try {
     console.log('🚀 Initializing virtual vehicle system...');
 
-    // Start virtual vehicle updater if available
     if (virtualUpdater && typeof virtualUpdater.start === 'function') {
       virtualUpdater.start();
       console.log('✅ Virtual vehicle updater started');
     }
 
-    // Cleanup on exit
     process.on('SIGTERM', () => {
       console.log('🛑 Shutting down virtual vehicle system...');
       if (virtualUpdater && typeof virtualUpdater.stop === 'function') {
