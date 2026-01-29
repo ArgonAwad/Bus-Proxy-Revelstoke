@@ -133,7 +133,7 @@ class VirtualVehicleManager {
     const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
     if (!currentStopInfo) return null;
     const { currentStop, nextStop, progress } = currentStopInfo;
-    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleData);
+    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleLoader.scheduleData, vehicle.vehicle.trip.tripId);
     const routeDisplay = this.getRouteDisplayName(trip.routeId);
     const labelPrefix = modeType === 'All Virtual' ? 'Virtual' : 'Ghost';
     return {
@@ -212,12 +212,24 @@ class VirtualVehicleManager {
     const lastStop = stopTimes[stopTimes.length - 1];
     return { currentStop: lastStop, nextStop: null, progress: 0 };
   }
-  calculateCurrentPosition(currentStop, nextStop, progress, scheduleData) {
+  calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {  // ADD tripId param
   if (!scheduleData || !scheduleData.stops) {
-    console.warn('No scheduleData.stops available');
+    console.warn('No scheduleData.stops for position calculation');
     return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
   }
 
+  // Try shape interpolation first (smooth along route)
+  if (tripId) {
+    const shapePos = this.calculatePositionAlongShape(tripId, progress, scheduleData);
+    if (shapePos) {
+      console.log(`Using smooth shape interpolation for trip ${tripId}`);
+      return shapePos;  // This gives small increments along the full route
+    } else {
+      console.log(`No shape available for trip ${tripId} — falling back to stop-to-stop`);
+    }
+  }
+
+  // Fallback: stop-to-stop straight line
   const currentCoords = scheduleData.stops[currentStop.stopId];
   if (!currentCoords || !currentCoords.lat || !currentCoords.lon) {
     console.warn(`No coordinates for stop ${currentStop.stopId}`);
@@ -233,7 +245,7 @@ class VirtualVehicleManager {
     if (nextCoords && nextCoords.lat && nextCoords.lon) {
       lat += (nextCoords.lat - lat) * progress;
       lon += (nextCoords.lon - lon) * progress;
-      speed = 25; // or dynamic if you have dist/time
+      speed = 25;
     }
   }
 
@@ -315,7 +327,7 @@ class VirtualVehicleManager {
     vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
     vehicle.vehicle.timestamp = currentTimeSec;
     vehicle.vehicle.progress = progress;
-    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleLoader.scheduleData);
+    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, trip.tripId);
     vehicle.vehicle.position.latitude = position.latitude;
     vehicle.vehicle.position.longitude = position.longitude;
     vehicle.vehicle.position.bearing = position.bearing;
