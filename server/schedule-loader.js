@@ -150,18 +150,24 @@ class ScheduleLoader {
   }
 
   createStopsMap(stopsArray) {
-    const map = {};
-    stopsArray.forEach(stop => {
-      map[stop.stop_id] = {
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name,
-        stop_lat: parseFloat(stop.stop_lat),
-        stop_lon: parseFloat(stop.stop_lon),
-        // add any other fields your code used
-      };
-    });
-    return map;
-  }
+  const map = {};
+  let validCount = 0;
+  stopsArray.forEach(stop => {
+    const id = String(stop.stop_id).trim(); // force string, remove whitespace
+    const lat = parseFloat(stop.stop_lat);
+    const lon = parseFloat(stop.stop_lon);
+    if (!isNaN(lat) && !isNaN(lon)) {
+      map[id] = { lat, lon, name: stop.stop_name || '' };
+      validCount++;
+    } else {
+      console.warn(`Invalid lat/lon for stop ${id}: lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
+    }
+  });
+  console.log(`Stops map created: ${Object.keys(map).length} entries (${validCount} valid coords)`);
+  console.log(`Sample stop keys: ${Object.keys(map).slice(0, 5).join(', ')}`);
+  console.log(`Does 156095 exist? ${!!map['156095']}`);
+  return map;
+}
 
   createStopTimesByTrip(stopTimesArray) {
     const byTrip = {};
