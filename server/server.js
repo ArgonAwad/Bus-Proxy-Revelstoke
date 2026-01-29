@@ -168,6 +168,100 @@ app.get('/api/vehicle_positions', async (req, res) => {
   }
 });
 
+// Dedicated virtual-only feed with SAME STRUCTURE as /api/buses
+app.get('/api/virtuals', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+
+    console.log(`Generating virtual-only feed (buses-compatible) for operator ${operatorId}`);
+
+    // Fetch real feeds (same as /api/buses)
+    const [vehicleResult, tripResult, alertsResult] = await Promise.all([
+      fetchGTFSFeed('vehicleupdates.pb', operatorId),
+      fetchGTFSFeed('tripupdates.pb', operatorId),
+      fetchGTFSFeed('alerts.pb', operatorId)
+    ]);
+
+    // Load schedule
+    await scheduleLoader.loadSchedules(operatorId);
+
+    // Force ALL virtual mode for this endpoint
+    const originalMode = virtualVehicleManager.currentMode;
+    virtualVehicleManager.setMode('all');
+
+    // Generate virtuals (force all scheduled trips, ignore real vehicles)
+    const virtualVehicles = virtualVehicleManager.getVirtualVehicles(
+      tripResult.data,
+      scheduleLoader.scheduleData,
+      new Set() // empty → no real vehicles considered
+    );
+
+    // Update positions
+    virtualVehicleManager.updateVirtualPositions();
+
+    // Restore original mode
+    virtualVehicleManager.setMode(originalMode);
+
+    // Build response EXACTLY like /api/buses
+    const response = {
+      metadata: {
+        operatorId,
+        location: operatorId === '36' ? 'Revelstoke' :
+                  operatorId === '47' ? 'Kelowna' :
+                  operatorId === '48' ? 'Victoria' : `Operator ${operatorId}`,
+        fetchedAt: new Date().toISOString(),
+        feeds: {
+          vehicle_positions: {
+            success: true,
+            entities: virtualVehicles.length,
+            virtual_vehicles: virtualVehicles.length,
+            url: 'Generated virtual-only feed (all scheduled trips)',
+            mode: 'all_virtual'
+          },
+          trip_updates: {
+            success: tripResult.success,
+            entities: tripResult.data?.entity?.length || 0,
+            url: tripResult.url
+          },
+          service_alerts: {
+            success: alertsResult.success,
+            entities: alertsResult.data?.entity?.length || 0,
+            url: alertsResult.url
+          }
+        }
+      },
+      data: {
+        vehicle_positions: {
+          entity: virtualVehicles,  // ONLY virtuals here
+          header: {
+            gtfsRealtimeVersion: '1.0',
+            incrementality: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            feedVersion: 'VIRTUAL-ALL'
+          },
+          metadata: {
+            total_vehicles: virtualVehicles.length,
+            virtual_vehicles: virtualVehicles.length,
+            real_vehicles: 0
+          }
+        },
+        trip_updates: tripResult.data || { entity: [] },
+        service_alerts: alertsResult.data || { entity: [] }
+      }
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error in /api/virtuals:', error);
+    res.status(500).json({
+      error: 'Failed to generate virtual-only feed',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Trip updates only
 app.get('/api/trip_updates', async (req, res) => {
   try {
@@ -247,7 +341,6 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
     
-    // ====== REPLACE THIS ENTIRE SECTION (lines 24-44) ======
     // Enhance vehicle positions with virtual vehicles
     let enhancedVehicleResult = vehicleResult;
     if (vehicleResult.success && tripResult.success) {
