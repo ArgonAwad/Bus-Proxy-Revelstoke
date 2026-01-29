@@ -229,9 +229,8 @@ class VirtualVehicleManager {
       if (nextCoords && nextCoords.lat && nextCoords.lon) {
         lat = lat + (nextCoords.lat - lat) * progress;
         lon = lon + (nextCoords.lon - lon) * progress;
-        const bearing = this.calculateBearing(lat, lon, nextCoords.lat, nextCoords.lon);
         const speed = 25; // km/h when moving
-        return { latitude: lat, longitude: lon, bearing, speed };
+        return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
       }
     }
     return { latitude: lat, longitude: lon, bearing: 0, speed: 0 };
@@ -252,8 +251,7 @@ class VirtualVehicleManager {
     const segProgress = (progress * (totalPoints - 1)) % 1;
     const lat = p1.lat + (p2.lat - p1.lat) * segProgress;
     const lon = p1.lon + (p2.lon - p1.lon) * segProgress;
-    const bearing = this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-    return { latitude: lat, longitude: lon, bearing, speed: 25 };
+    return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
   }
   calculateBearing(lat1, lon1, lat2, lon2) {
     const φ1 = lat1 * Math.PI / 180;
