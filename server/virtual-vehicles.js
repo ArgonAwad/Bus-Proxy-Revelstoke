@@ -15,6 +15,7 @@ class VirtualVehicleManager {
     };
     this.currentMode = this.MODE.SUBS_ONLY; // Default mode
   }
+
   // Set the virtual bus mode
   setMode(mode) {
     if (Object.values(this.MODE).includes(mode)) {
@@ -24,6 +25,7 @@ class VirtualVehicleManager {
     }
     return false;
   }
+
   // Get virtual vehicles based on current mode
   getVirtualVehicles(tripUpdates, scheduleData, realVehicleIds = new Set()) {
     switch (this.currentMode) {
@@ -37,6 +39,7 @@ class VirtualVehicleManager {
         return [];
     }
   }
+
   // MODE 1: All scheduled trips as virtual (for testing/debugging)
   generateAllVirtualVehicles(tripUpdates, scheduleData) {
     const virtualVehicles = [];
@@ -62,6 +65,7 @@ class VirtualVehicleManager {
     console.log(`👻 ALL VIRTUAL mode: Created ${virtualVehicles.length} virtual buses`);
     return virtualVehicles;
   }
+
   // MODE 2: Only virtual buses for missing real buses
   generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
     const virtualVehicles = [];
@@ -89,7 +93,7 @@ class VirtualVehicleManager {
     });
     activeTrips.forEach((activeTrip) => {
       const { trip, stopTimes, hasRealVehicle, tripVehicleId } = activeTrip;
-      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId) || realVehicleIds.has(trip.tripId);  // NEW: extra check for tripId
+      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId) || realVehicleIds.has(trip.tripId);
       if (!hasRealVehicle && !isRealVehicleTracked) {
         subCount++;
         const virtualVehicle = this.createVirtualVehicle(
@@ -101,12 +105,13 @@ class VirtualVehicleManager {
         );
         if (virtualVehicle) virtualVehicles.push(virtualVehicle);
       } else {
-        console.log(`Skipping virtual for tracked trip ${trip.tripId}`);
+        console.log(`Skipping virtual for tracked trip ${trip.tripId} (real vehicle detected)`);
       }
     });
     console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses for ${activeTrips.length} active trips`);
     return virtualVehicles;
   }
+
   isTripCurrentlyActive(stopTimes, currentTimeSec) {
     if (stopTimes.length === 0) return false;
     const firstStop = stopTimes[0];
@@ -117,6 +122,7 @@ class VirtualVehicleManager {
     const buffer = 300; // 5 min buffer
     return currentTimeSec >= (startTime - buffer) && currentTimeSec <= (endTime + buffer);
   }
+
   isTripInTimeWindow(stopTimes, currentTimeSec, windowSeconds) {
     if (stopTimes.length === 0) return false;
     const firstStop = stopTimes[0];
@@ -128,12 +134,19 @@ class VirtualVehicleManager {
            Math.abs(currentTimeSec - endTime) <= windowSeconds ||
            (currentTimeSec >= startTime && currentTimeSec <= endTime);
   }
+
   createVirtualVehicle(trip, stopTimes, scheduleData, vehicleId, modeType) {
     const currentTimeSec = Math.floor(Date.now() / 1000);
     const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
     if (!currentStopInfo) return null;
     const { currentStop, nextStop, progress } = currentStopInfo;
-    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleLoader.scheduleData, vehicle.vehicle.trip.tripId);
+    const position = this.calculateCurrentPosition(
+      currentStop,
+      nextStop,
+      progress,
+      scheduleData,
+      trip.tripId
+    );
     const routeDisplay = this.getRouteDisplayName(trip.routeId);
     const labelPrefix = modeType === 'All Virtual' ? 'Virtual' : 'Ghost';
     return {
@@ -187,6 +200,7 @@ class VirtualVehicleManager {
       modeType: modeType
     };
   }
+
   findCurrentStopAndProgress(stopTimes, currentTimeSec) {
     for (let i = 0; i < stopTimes.length; i++) {
       const currentStop = stopTimes[i];
@@ -212,53 +226,73 @@ class VirtualVehicleManager {
     const lastStop = stopTimes[stopTimes.length - 1];
     return { currentStop: lastStop, nextStop: null, progress: 0 };
   }
-  calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {  // ADD tripId param
-  if (!scheduleData || !scheduleData.stops) {
-    console.warn('No scheduleData.stops for position calculation');
-    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-  }
 
-  // Try shape interpolation first (smooth along route)
-  if (tripId) {
-    const shapePos = this.calculatePositionAlongShape(tripId, progress, scheduleData);
-    if (shapePos) {
-      console.log(`Using smooth shape interpolation for trip ${tripId}`);
-      return shapePos;  // This gives small increments along the full route
-    } else {
-      console.log(`No shape available for trip ${tripId} — falling back to stop-to-stop`);
+  calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
+    if (!scheduleData || !scheduleData.stops) {
+      console.warn('No scheduleData.stops available for position calculation');
+      return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
     }
-  }
 
-  // Fallback: stop-to-stop straight line
-  const currentCoords = scheduleData.stops[currentStop.stopId];
-  if (!currentCoords || !currentCoords.lat || !currentCoords.lon) {
-    console.warn(`No coordinates for stop ${currentStop.stopId}`);
-    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-  }
-
-  let lat = currentCoords.lat;
-  let lon = currentCoords.lon;
-  let speed = 0;
-
-  if (progress > 0 && nextStop) {
-    const nextCoords = scheduleData.stops[nextStop.stopId];
-    if (nextCoords && nextCoords.lat && nextCoords.lon) {
-      lat += (nextCoords.lat - lat) * progress;
-      lon += (nextCoords.lon - lon) * progress;
-      speed = 25;
+    // Try shape interpolation first (smooth along route)
+    if (tripId && scheduleData.tripsMap && scheduleData.shapes) {
+      const shapePos = this.calculatePositionAlongShape(tripId, progress, scheduleData);
+      if (shapePos) {
+        console.log(`Using smooth shape interpolation for trip ${tripId}`);
+        return shapePos;
+      } else {
+        console.log(`No shape available for trip ${tripId} — falling back to stop-to-stop`);
+      }
     }
+
+    // Fallback: straight line between stops
+    const currentCoords = scheduleData.stops[currentStop.stopId];
+    if (!currentCoords || !currentCoords.lat || !currentCoords.lon) {
+      console.warn(`No coordinates for stop ${currentStop.stopId}`);
+      return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
+    }
+
+    let lat = currentCoords.lat;
+    let lon = currentCoords.lon;
+    let speed = 0;
+
+    if (progress > 0 && nextStop) {
+      const nextCoords = scheduleData.stops[nextStop.stopId];
+      if (nextCoords && nextCoords.lat && nextCoords.lon) {
+        lat += (nextCoords.lat - lat) * progress;
+        lon += (nextCoords.lon - lon) * progress;
+        speed = 25;
+      }
+    }
+
+    return { latitude: lat, longitude: lon, bearing: null, speed };
   }
 
-  return { latitude: lat, longitude: lon, bearing: null, speed };
-}
-  // Optional: Full shape interpolation (call this instead of stop-to-stop if shapes loaded)
   calculatePositionAlongShape(tripId, progress, scheduleData) {
     const trip = scheduleData.tripsMap?.[tripId];
     if (!trip || !trip.shape_id) return null;
+
     const shapeId = trip.shape_id;
     const shapePoints = scheduleData.shapes?.[shapeId];
     if (!shapePoints || shapePoints.length < 2) return null;
-    // Simple uniform progress along shape (improve later with dist_traveled)
+
+    // Use shape_dist_traveled if available for accurate progress
+    const totalDistance = shapePoints[shapePoints.length - 1].dist || null;
+    if (totalDistance && totalDistance > 0) {
+      const targetDist = progress * totalDistance;
+      for (let i = 0; i < shapePoints.length - 1; i++) {
+        const p1 = shapePoints[i];
+        const p2 = shapePoints[i + 1];
+        if (targetDist >= p1.dist && targetDist <= p2.dist) {
+          const segDist = p2.dist - p1.dist;
+          const segProgress = (targetDist - p1.dist) / segDist;
+          const lat = p1.lat + (p2.lat - p1.lat) * segProgress;
+          const lon = p1.lon + (p2.lon - p1.lon) * segProgress;
+          return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
+        }
+      }
+    }
+
+    // Fallback: uniform point index
     const totalPoints = shapePoints.length;
     const index = Math.floor(progress * (totalPoints - 1));
     const nextIndex = Math.min(index + 1, totalPoints - 1);
@@ -269,6 +303,7 @@ class VirtualVehicleManager {
     const lon = p1.lon + (p2.lon - p1.lon) * segProgress;
     return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
   }
+
   calculateBearing(lat1, lon1, lat2, lon2) {
     const φ1 = lat1 * Math.PI / 180;
     const φ2 = lat2 * Math.PI / 180;
@@ -278,17 +313,19 @@ class VirtualVehicleManager {
     const θ = Math.atan2(y, x);
     return (θ * 180 / Math.PI + 360) % 360;
   }
+
   getRouteDisplayName(routeId) {
     if (!routeId) return 'Bus';
     const match = routeId.match(/^(\d+)/);
     return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
   }
+
   updateVirtualPositions() {
     const now = Date.now();
     let updatedCount = 0;
     for (const [tripId, vehicle] of this.virtualVehicles) {
       const age = now - vehicle.lastUpdated;
-      if (age > 15000) { // update every 15 seconds
+      if (age > 30000) { // update every 30 seconds to reduce jitter
         this.updateVehiclePosition(vehicle);
         vehicle.lastUpdated = now;
         updatedCount++;
@@ -296,6 +333,7 @@ class VirtualVehicleManager {
     }
     return updatedCount;
   }
+
   updateVehiclePosition(vehicle) {
     if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
       console.log(`Removing virtual ${vehicle.id} - no stop times`);
@@ -310,39 +348,49 @@ class VirtualVehicleManager {
       return;
     }
     const { currentStop, nextStop, progress } = currentStopInfo;
-    // NEW: Check if the trip has ended (no next stop + current time past final arrival)
+
+    // Check if the trip has ended
     if (!nextStop) {
       const lastStop = vehicle.stopTimes[vehicle.stopTimes.length - 1];
       const lastArrivalTime = lastStop.arrival?.time || lastStop.departure?.time || 0;
-      const bufferSeconds = 600; // 10 minutes buffer after final arrival (adjustable)
+      const bufferSeconds = 600; // 10 min buffer
       if (currentTimeSec > lastArrivalTime + bufferSeconds) {
-        console.log(`Removing completed virtual bus ${vehicle.id} (trip ended at ${lastArrivalTime}, current ${currentTimeSec})`);
+        console.log(`Removing completed virtual bus ${vehicle.id} (ended at ${lastArrivalTime})`);
         this.virtualVehicles.delete(vehicle.id);
         return;
       }
     }
-    // Normal update for active trip
+
+    // Normal update
     vehicle.vehicle.currentStopSequence = currentStop.stopSequence || 1;
     vehicle.vehicle.stopId = currentStop.stopId;
     vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
     vehicle.vehicle.timestamp = currentTimeSec;
     vehicle.vehicle.progress = progress;
-    const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, trip.tripId);
+
+    const position = this.calculateCurrentPosition(
+      currentStop,
+      nextStop,
+      progress,
+      scheduleLoader.scheduleData,
+      vehicle.vehicle.trip.tripId
+    );
+
     vehicle.vehicle.position.latitude = position.latitude;
     vehicle.vehicle.position.longitude = position.longitude;
     vehicle.vehicle.position.bearing = position.bearing;
     vehicle.vehicle.position.speed = position.speed;
+
     vehicle.currentStop = currentStop;
     vehicle.nextStop = nextStop;
-    // Optional: log for debugging
-    // console.log(`Updated virtual ${vehicle.id}: seq=${currentStop.stopSequence}, progress=${progress.toFixed(2)}, pos=${position.latitude.toFixed(5)},${position.longitude.toFixed(5)}`);
   }
-  cleanupOldVehicles(maxAgeMinutes = 60) { // Reduced from 120 to 60 minutes for safety
+
+  cleanupOldVehicles(maxAgeMinutes = 60) {
     const cutoff = Date.now() - (maxAgeMinutes * 60 * 1000);
     let removed = 0;
     for (const [key, vehicle] of this.virtualVehicles) {
       if (vehicle.lastUpdated < cutoff) {
-        console.log(`Age-based cleanup: removing stale virtual ${vehicle.id} (last updated ${new Date(vehicle.lastUpdated).toISOString()})`);
+        console.log(`Age-based cleanup: removing stale virtual ${vehicle.id}`);
         this.virtualVehicles.delete(key);
         this.lastGenerated.delete(key);
         removed++;
@@ -353,7 +401,7 @@ class VirtualVehicleManager {
     }
     return removed;
   }
-};
+}
 
 // Singleton instance
 const virtualVehicleManager = new VirtualVehicleManager();
