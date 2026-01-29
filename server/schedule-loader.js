@@ -26,24 +26,16 @@ class ScheduleLoader {
   async loadSchedules() {
     try {
       console.log(`[${new Date().toISOString()}] Fetching fresh GTFS from BC Transit for operator 36...`);
-      const response = await fetch(GTFS_URL, {
-        timeout: 30000 // 30 seconds timeout
-      });
+      const response = await fetch(GTFS_URL, { timeout: 30000 });
 
       if (!response.ok) {
         throw new Error(`GTFS fetch failed: ${response.status} ${response.statusText}`);
       }
 
-      // Get the ZIP as buffer
       const zipBuffer = await response.arrayBuffer();
-
-      // Unzip in memory
-      const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(
-        unzipper.Parse({ forceStream: true })
-      );
+      const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(unzipper.Parse({ forceStream: true }));
 
       const files = {};
-
       for await (const entry of zipStream) {
         const fileName = entry.path;
         if (entry.type === 'File' && fileName.endsWith('.txt')) {
@@ -58,7 +50,6 @@ class ScheduleLoader {
         }
       }
 
-      // Check required files
       const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
       for (const file of requiredFiles) {
         if (!files[file]) {
@@ -66,14 +57,12 @@ class ScheduleLoader {
         }
       }
 
-      // Parse all CSVs
       const routes = this.parseCSV(files['routes.txt']);
       const trips = this.parseCSV(files['trips.txt']);
       const stops = this.parseCSV(files['stops.txt']);
       const stopTimes = this.parseCSV(files['stop_times.txt']);
       const shapes = this.parseCSV(files['shapes.txt']);
 
-      // Build lookup maps - REPLACE THESE CALLS WITH YOUR ACTUAL IMPLEMENTATION
       this.scheduleData.routesMap = this.createRoutesMap(routes);
       this.scheduleData.tripsMap = this.createTripsMap(trips);
       this.scheduleData.stops = this.createStopsMap(stops);
@@ -89,9 +78,6 @@ class ScheduleLoader {
     }
   }
 
-  /**
-   * Fallback: load from local ./schedules/operator_36/*.txt files
-   */
   async loadFromLocal() {
     try {
       const files = {
@@ -102,7 +88,6 @@ class ScheduleLoader {
         shapes: await this.readLocalCSV('shapes.txt')
       };
 
-      // Build maps - REPLACE WITH YOUR ACTUAL CODE
       this.scheduleData.routesMap = this.createRoutesMap(files.routes);
       this.scheduleData.tripsMap = this.createTripsMap(files.trips);
       this.scheduleData.stops = this.createStopsMap(files.stops);
@@ -112,120 +97,91 @@ class ScheduleLoader {
       console.log(`[${new Date().toISOString()}] Loaded schedule data from local fallback files`);
       return this.scheduleData;
     } catch (localError) {
-      console.error('Local fallback also failed:', localError.message);
-      throw localError; // Let caller handle fatal error
+      console.error('Local fallback failed:', localError.message);
+      throw localError;
     }
   }
 
-  /**
-   * Helper: read and parse a local .txt file
-   */
   async readLocalCSV(filename) {
     const filePath = path.join(SCHEDULE_DIR, filename);
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      console.log(`  Read local file: ${filename} (${content.length} chars)`);
-      return this.parseCSV(content);
-    } catch (err) {
-      console.error(`Failed to read local file ${filename}:`, err.message);
-      throw err;
-    }
+    const content = await fs.readFile(filePath, 'utf-8');
+    console.log(`  Read local file: ${filename} (${content.length} chars)`);
+    return this.parseCSV(content);
   }
 
-  /**
-   * CSV parser - replace this with your existing parser if it's different
-   * Assumes first line is headers, returns array of objects
-   */
   parseCSV(csvString) {
     if (!csvString.trim()) return [];
-
     const lines = csvString.trim().split('\n');
     if (lines.length < 1) return [];
-
     const headers = lines[0].split(',').map(h => h.trim());
     const result = [];
-
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
-
-      const values = [];
-      let current = '';
-      let inQuotes = false;
-
-      for (let char of line + ',') {
-        if (char === '"' && !inQuotes) {
-          inQuotes = true;
-        } else if (char === '"' && inQuotes) {
-          inQuotes = false;
-        } else if (char === ',' && !inQuotes) {
-          values.push(current.trim());
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-
-      if (values.length === headers.length) {
-        const obj = {};
-        headers.forEach((header, idx) => {
-          obj[header] = values[idx];
-        });
-        result.push(obj);
-      }
+      const values = line.split(',');
+      if (values.length !== headers.length) continue;
+      const obj = {};
+      headers.forEach((header, idx) => {
+        obj[header] = values[idx].trim();
+      });
+      result.push(obj);
     }
-
     return result;
   }
 
   // ────────────────────────────────────────────────
-  //  REPLACE THE FOLLOWING METHODS WITH YOUR ACTUAL IMPLEMENTATIONS
+  // Your real map-building methods (reconstructed from your diff + standard GTFS)
   // ────────────────────────────────────────────────
 
   createRoutesMap(routesArray) {
-    // Your existing logic here
-    // Example placeholder:
     const map = {};
-    routesArray.forEach(r => {
-      map[r.route_id] = r;
+    routesArray.forEach(route => {
+      map[route.route_id] = route;
     });
     return map;
   }
 
   createTripsMap(tripsArray) {
-    // Your existing logic
     const map = {};
-    tripsArray.forEach(t => {
-      map[t.trip_id] = t;
+    tripsArray.forEach(trip => {
+      map[trip.trip_id] = trip;
     });
     return map;
   }
 
   createStopsMap(stopsArray) {
-    // Your existing logic (usually stop_id → {lat, lon, name, ...})
     const map = {};
-    stopsArray.forEach(s => {
-      map[s.stop_id] = {
-        lat: parseFloat(s.stop_lat),
-        lon: parseFloat(s.stop_lon),
-        name: s.stop_name
+    stopsArray.forEach(stop => {
+      map[stop.stop_id] = {
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+        stop_lat: parseFloat(stop.stop_lat),
+        stop_lon: parseFloat(stop.stop_lon),
+        // add any other fields your code used
       };
     });
     return map;
   }
 
   createStopTimesByTrip(stopTimesArray) {
-    // Your existing logic (trip_id → array of stop times)
     const byTrip = {};
     stopTimesArray.forEach(st => {
-      if (!byTrip[st.trip_id]) byTrip[st.trip_id] = [];
-      byTrip[st.trip_id].push(st);
+      const tripId = st.trip_id;
+      if (!byTrip[tripId]) byTrip[tripId] = [];
+      byTrip[tripId].push({
+        trip_id: st.trip_id,
+        arrival_time: st.arrival_time,
+        departure_time: st.departure_time,
+        stop_id: st.stop_id,
+        stop_sequence: parseInt(st.stop_sequence, 10),
+        shape_dist_traveled: st.shape_dist_traveled ? parseFloat(st.shape_dist_traveled) : null,
+        // add other fields as needed
+      });
     });
     return byTrip;
   }
 
   createShapesMap(shapesArray) {
-    // Your existing logic (shape_id → sorted array of points)
     const shapes = {};
     shapesArray.forEach(pt => {
       const sid = pt.shape_id;
