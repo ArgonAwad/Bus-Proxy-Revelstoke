@@ -3,9 +3,10 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import protobuf from 'protobufjs';
 import virtualVehicleManager from './virtual-vehicles.js';
-import scheduleLoader from './schedule-loader.js';
 import virtualUpdater from './virtual-updater.js';
+import ScheduleLoader from './schedule-loader.js';
 
+const scheduleLoader = new ScheduleLoader(); 
 const app = express();
 app.use(cors());
 
