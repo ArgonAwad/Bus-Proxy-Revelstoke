@@ -67,48 +67,48 @@ class VirtualVehicleManager {
   }
 
   // MODE 2: Only virtual buses for missing real buses
-  generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
+    generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
     const virtualVehicles = [];
     if (!tripUpdates || !tripUpdates.entity) return virtualVehicles;
+
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    let subCount = 0;
-    const activeTrips = [];
+    const createdTrips = new Set(); // NEW: prevent duplicates within this generation
+
     tripUpdates.entity.forEach((tripUpdate) => {
       if (!tripUpdate.tripUpdate) return;
+
       const trip = tripUpdate.tripUpdate.trip;
       const vehicle = tripUpdate.tripUpdate.vehicle;
       const stopTimes = tripUpdate.tripUpdate.stopTimeUpdate || [];
+
       if (!trip || !trip.tripId || stopTimes.length === 0) return;
+
       if (this.isTripCurrentlyActive(stopTimes, currentTimeSec)) {
         const hasRealVehicle = vehicle && vehicle.id && vehicle.id !== '';
-        const tripVehicleId = vehicle?.id || trip.tripId;
-        activeTrips.push({
-          trip,
-          stopTimes,
-          hasRealVehicle,
-          tripVehicleId,
-          vehicleData: vehicle
-        });
+        const tripId = trip.tripId;
+        const vehicleId = vehicle?.id || tripId;
+
+        const isTracked = realVehicleIds.has(vehicleId) || realVehicleIds.has(tripId);
+
+        if (!hasRealVehicle && !isTracked && !createdTrips.has(tripId)) {
+          createdTrips.add(tripId); // Mark as created to avoid dupes
+          const virtualVehicle = this.createVirtualVehicle(
+            trip,
+            stopTimes,
+            scheduleData,
+            `VSUB${virtualVehicles.length + 1}`,
+            'Substitute'
+          );
+          if (virtualVehicle) virtualVehicles.push(virtualVehicle);
+        } else if (createdTrips.has(tripId)) {
+          console.log(`Skipped duplicate virtual for already created trip ${tripId}`);
+        } else {
+          console.log(`Skipped virtual for tracked trip ${tripId}`);
+        }
       }
     });
-    activeTrips.forEach((activeTrip) => {
-      const { trip, stopTimes, hasRealVehicle, tripVehicleId } = activeTrip;
-      const isRealVehicleTracked = realVehicleIds.has(tripVehicleId) || realVehicleIds.has(trip.tripId);
-      if (!hasRealVehicle && !isRealVehicleTracked) {
-        subCount++;
-        const virtualVehicle = this.createVirtualVehicle(
-          trip,
-          stopTimes,
-          scheduleData,
-          `VSUB${subCount.toString().padStart(3, '0')}`,
-          'Substitute'
-        );
-        if (virtualVehicle) virtualVehicles.push(virtualVehicle);
-      } else {
-        console.log(`Skipping virtual for tracked trip ${trip.tripId} (real vehicle detected)`);
-      }
-    });
-    console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses for ${activeTrips.length} active trips`);
+
+    console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses created`);
     return virtualVehicles;
   }
 
