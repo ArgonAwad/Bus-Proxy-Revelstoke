@@ -32,24 +32,31 @@ async function loadProto() {
 }
 
 // Helper function to fetch and decode a GTFS feed
+// In your server.js, update the fetchGTFSFeed function to preserve blockId:
 async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
   if (!root) {
     throw new Error('Proto not loaded');
   }
-
   const url = `${BASE_URL}/${feedType}?operatorIds=${operatorId}`;
-  
+
   try {
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    
+   
     const buffer = await response.arrayBuffer();
     const FeedMessage = root.lookupType('transit_realtime.FeedMessage');
     const message = FeedMessage.decode(new Uint8Array(buffer));
-    const data = FeedMessage.toObject(message, { defaults: true });
     
+    // Convert to object, preserving blockId if it exists
+    const data = FeedMessage.toObject(message, {
+      defaults: true,
+      longs: String,
+      enums: String,
+      bytes: String,
+    });
+   
     return {
       success: true,
       data,
@@ -165,6 +172,33 @@ app.get('/api/vehicle_positions', async (req, res) => {
         });
       }
 
+      // Helper to add block_id to real vehicles from schedule data
+function addBlockIdToVehicles(vehicleEntities, scheduleData) {
+  if (!vehicleEntities || !scheduleData?.trips) return vehicleEntities;
+  
+  return vehicleEntities.map(entity => {
+    // Skip if already has blockId from GTFS-RT feed
+    if (entity.vehicle?.trip?.blockId) {
+      return entity;
+    }
+    
+    // Try to get block_id from schedule data
+    if (entity.vehicle?.trip?.tripId) {
+      const tripId = entity.vehicle.trip.tripId;
+      const scheduledTrip = scheduleData.trips.find(t => t.trip_id === tripId);
+      
+      if (scheduledTrip?.block_id) {
+        // Clone the entity to avoid mutating original
+        const enrichedEntity = JSON.parse(JSON.stringify(entity));
+        enrichedEntity.vehicle.trip.blockId = scheduledTrip.block_id;
+        return enrichedEntity;
+      }
+    }
+    
+    return entity;
+  });
+}
+      
       // Generate virtuals based on mode
       if (virtualMode === 'all') {
         virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
@@ -321,13 +355,15 @@ app.get('/api/service_alerts', async (req, res) => {
 
 // ====== COMBINED FEED ENDPOINT ======
 
-// All feeds combined (legacy /api/buses endpoint)
-// All feeds combined (legacy /api/buses endpoint)
+// All feeds combined (legacy /api/buses endpoint) - ALWAYS includes blockId
 app.get('/api/buses', async (req, res) => {
   if (!root) return res.status(500).json({ error: 'Proto not loaded' });
-
+  
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const startTime = Date.now();
+    
+    console.log(`[${new Date().toISOString()}] /api/buses called for operator ${operatorId}`);
     
     // Fetch all three feeds in parallel
     const [vehicleResult, tripResult, alertsResult] = await Promise.all([
@@ -336,65 +372,142 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
     
-    // Enhance vehicle positions with virtual vehicles
+    // Always load schedule for block_id enrichment
+    await scheduleLoader.loadSchedules(operatorId);
+    
+    // Enhance vehicle positions with virtual vehicles AND block_id
     let enhancedVehicleResult = vehicleResult;
-    if (vehicleResult.success && tripResult.success) {
-      await scheduleLoader.loadSchedules(operatorId);
-      
+    let blockIdEnrichedCount = 0;
+    
+    if (vehicleResult.success) {
       // Get IDs of real vehicles
       const realVehicleIds = new Set();
-      vehicleResult.data?.entity?.forEach(vehicle => {
+      const realVehicles = vehicleResult.data?.entity || [];
+      
+      realVehicles.forEach(vehicle => {
         if (vehicle.vehicle?.vehicle?.id) {
           realVehicleIds.add(vehicle.vehicle.vehicle.id);
         }
       });
       
-      // Generate substitute virtual vehicles
-      const virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
-        tripResult.data,
-        scheduleLoader.scheduleData,
-        realVehicleIds
-      );
-      
-      if (virtualVehicles.length > 0) {
-        const realEntities = vehicleResult.data?.entity || [];
-        const allEntities = [...realEntities, ...virtualVehicles];
+      // Generate substitute virtual vehicles if trip updates are available
+      let virtualVehicles = [];
+      if (tripResult.success) {
+        virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
+          tripResult.data,
+          scheduleLoader.scheduleData,
+          realVehicleIds
+        );
         
-        enhancedVehicleResult = {
-          ...vehicleResult,
-          data: {
-            ...vehicleResult.data,
-            entity: allEntities,
-            metadata: {
-              ...vehicleResult.data.metadata,
-              total_vehicles: allEntities.length,
-              virtual_vehicles: virtualVehicles.length,
-              real_vehicles: realEntities.length
-            }
-          }
-        };
+        if (virtualVehicles.length > 0) {
+          console.log(`Generated ${virtualVehicles.length} virtual vehicles`);
+        }
       }
+      
+      // Combine real and virtual
+      const allVehicles = [...realVehicles, ...virtualVehicles];
+      
+      // ENRICH ALL VEHICLES WITH BLOCK_ID FROM SCHEDULE
+      const enrichedVehicles = allVehicles.map(vehicle => {
+        // Create a copy to avoid mutation
+        const enrichedVehicle = JSON.parse(JSON.stringify(vehicle));
+        
+        // Only enrich if vehicle has a trip with tripId
+        if (enrichedVehicle.vehicle?.trip?.tripId && scheduleLoader.scheduleData?.trips) {
+          const tripId = enrichedVehicle.vehicle.trip.tripId;
+          const scheduledTrip = scheduleLoader.scheduleData.trips.find(t => t.trip_id === tripId);
+          
+          if (scheduledTrip?.block_id) {
+            // Add blockId to the trip object
+            enrichedVehicle.vehicle.trip.blockId = scheduledTrip.block_id;
+            blockIdEnrichedCount++;
+          } else if (enrichedVehicle.vehicle.trip.blockId) {
+            // If it already has blockId from GTFS-RT feed, count it
+            blockIdEnrichedCount++;
+          }
+        }
+        
+        return enrichedVehicle;
+      });
+      
+      // Update the result
+      enhancedVehicleResult = {
+        ...vehicleResult,
+        data: {
+          ...vehicleResult.data,
+          entity: enrichedVehicles,
+          metadata: {
+            ...vehicleResult.data.metadata,
+            total_vehicles: enrichedVehicles.length,
+            virtual_vehicles: virtualVehicles.length,
+            real_vehicles: realVehicles.length,
+            block_id_enriched: blockIdEnrichedCount,
+            block_id_coverage: enrichedVehicles.length > 0 ? 
+              Math.round((blockIdEnrichedCount / enrichedVehicles.length) * 100) + '%' : '0%'
+          }
+        }
+      };
     }
-    // ====== END OF REPLACEMENT ======
+    
+    // ENRICH TRIP UPDATES WITH BLOCK_ID (if they exist)
+    let enrichedTripResult = tripResult;
+    let tripUpdatesBlockIdCount = 0;
+    
+    if (tripResult.success && tripResult.data?.entity && scheduleLoader.scheduleData?.trips) {
+      const enrichedTripEntities = tripResult.data.entity.map(entity => {
+        const enrichedEntity = JSON.parse(JSON.stringify(entity));
+        
+        if (enrichedEntity.tripUpdate?.trip?.tripId) {
+          const tripId = enrichedEntity.tripUpdate.trip.tripId;
+          const scheduledTrip = scheduleLoader.scheduleData.trips.find(t => t.trip_id === tripId);
+          
+          if (scheduledTrip?.block_id) {
+            enrichedEntity.tripUpdate.trip.blockId = scheduledTrip.block_id;
+            tripUpdatesBlockIdCount++;
+          }
+        }
+        
+        return enrichedEntity;
+      });
+      
+      enrichedTripResult = {
+        ...tripResult,
+        data: {
+          ...tripResult.data,
+          entity: enrichedTripEntities
+        }
+      };
+    }
     
     // Prepare combined response
+    const responseTime = Date.now() - startTime;
     const response = {
       metadata: {
         operatorId,
-        location: operatorId === '36' ? 'Revelstoke' : 
-                  operatorId === '47' ? 'Kelowna' : 
+        location: operatorId === '36' ? 'Revelstoke' :
+                  operatorId === '47' ? 'Kelowna' :
                   operatorId === '48' ? 'Victoria' : `Operator ${operatorId}`,
         fetchedAt: new Date().toISOString(),
+        responseTimeMs: responseTime,
+        block_id: {
+          enabled: true,
+          enriched_vehicles: blockIdEnrichedCount,
+          enriched_trip_updates: tripUpdatesBlockIdCount,
+          schedule_loaded: !!scheduleLoader.scheduleData,
+          schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0
+        },
         feeds: {
           vehicle_positions: {
             success: enhancedVehicleResult.success,
             entities: enhancedVehicleResult.success ? enhancedVehicleResult.data.entity?.length || 0 : 0,
             virtual_vehicles: enhancedVehicleResult.data?.metadata?.virtual_vehicles || 0,
-            url: enhancedVehicleResult.url
+            block_id_enriched: enhancedVehicleResult.data?.metadata?.block_id_enriched || 0,
+            url: enhancedVehicleResult.url || 'Generated with block_id enrichment'
           },
           trip_updates: {
             success: tripResult.success,
             entities: tripResult.success ? tripResult.data.entity?.length || 0 : 0,
+            block_id_enriched: tripUpdatesBlockIdCount,
             url: tripResult.url
           },
           service_alerts: {
@@ -412,8 +525,8 @@ app.get('/api/buses', async (req, res) => {
       response.data.vehicle_positions = enhancedVehicleResult.data;
     }
     
-    if (tripResult.success) {
-      response.data.trip_updates = tripResult.data;
+    if (enrichedTripResult.success) {
+      response.data.trip_updates = enrichedTripResult.data;
     }
     
     if (alertsResult.success) {
@@ -430,11 +543,14 @@ app.get('/api/buses', async (req, res) => {
       response.metadata.errors = errors;
     }
     
+    console.log(`[${new Date().toISOString()}] /api/buses completed in ${responseTime}ms - Vehicles: ${enhancedVehicleResult.data?.entity?.length || 0}, BlockId enriched: ${blockIdEnrichedCount}`);
+    
     res.json(response);
+    
   } catch (error) {
     console.error('Error in /api/buses:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch combined feeds', 
+    res.status(500).json({
+      error: 'Failed to fetch combined feeds',
       details: error.message,
       timestamp: new Date().toISOString()
     });
@@ -714,85 +830,148 @@ app.get('/api/virtual_subs', async (req, res) => {
 });
 
 // 3. Updated vehicle positions (real + substitutes)
+// Vehicle positions with optional block_id enrichment
 app.get('/api/vehicle_positions', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const includeVirtual = req.query.virtual !== 'false';
+    const includeBlockId = req.query.block_id === 'true'; // New: explicitly enable block_id
     
-    // Set mode based on query param
-    const mode = req.query.virtual_mode || 'subs';
-    virtualVehicleManager.setMode(mode);
+    console.log(`Vehicle positions requested: operator=${operatorId}, virtual=${includeVirtual}, block_id=${includeBlockId}`);
     
-    // Fetch real vehicle positions
+    // Fetch vehicle positions
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    // If block_id requested, load schedule and enrich
+    if (includeBlockId && vehicleResult.success && vehicleResult.data?.entity) {
+      try {
+        await scheduleLoader.loadSchedules(operatorId);
+        
+        if (scheduleLoader.scheduleData) {
+          const enrichedEntities = addBlockIdToVehicles(
+            vehicleResult.data.entity,
+            scheduleLoader.scheduleData
+          );
+          
+          // Update the result with enriched entities
+          vehicleResult.data.entity = enrichedEntities;
+          
+          // Add metadata about block_id enrichment
+          const enrichedCount = enrichedEntities.filter(e => 
+            e.vehicle?.trip?.blockId
+          ).length;
+          
+          if (!vehicleResult.data.metadata) {
+            vehicleResult.data.metadata = {};
+          }
+          vehicleResult.data.metadata.block_id_enriched = enrichedCount;
+          vehicleResult.data.metadata.total_vehicles = enrichedEntities.length;
+        }
+      } catch (scheduleError) {
+        console.warn('Could not load schedule for block_id enrichment:', scheduleError.message);
+      }
+    }
+    
+    // Build response
+    const response = {
+      metadata: {
+        operatorId,
+        location: operatorId === '36' ? 'Revelstoke' :
+                  operatorId === '47' ? 'Kelowna' :
+                  operatorId === '48' ? 'Victoria' : `Operator ${operatorId}`,
+        fetchedAt: new Date().toISOString(),
+        block_id_enabled: includeBlockId,
+        block_id_enriched: vehicleResult.data?.metadata?.block_id_enriched || 0,
+        feed_info: {
+          success: vehicleResult.success,
+          entities: vehicleResult.success ? vehicleResult.data.entity?.length || 0 : 0,
+          url: vehicleResult.url,
+          timestamp: vehicleResult.timestamp
+        }
+      },
+      data: vehicleResult.success ? vehicleResult.data : null
+    };
     
     if (!vehicleResult.success) {
-      return res.status(500).json({
-        error: 'Failed to fetch vehicle positions',
-        details: vehicleResult.error,
-        timestamp: new Date().toISOString()
-      });
+      response.error = vehicleResult.error;
     }
     
-    let virtualVehicles = [];
-    let allEntities = vehicleResult.data?.entity || [];
-    
-    // Add virtual vehicles if enabled
-    if (includeVirtual && tripResult.success) {
-      // Load schedule
-      await scheduleLoader.loadSchedules(operatorId);
-      
-      // Get IDs of real vehicles
-      const realVehicleIds = new Set();
-      allEntities.forEach(vehicle => {
-        if (vehicle.vehicle?.vehicle?.id) {
-          realVehicleIds.add(vehicle.vehicle.vehicle.id);
-        }
-      });
-      
-      // Generate virtual vehicles based on current mode
-      if (mode === 'all') {
-        virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
-          tripResult.data,
-          scheduleLoader.scheduleData
-        );
-      } else if (mode === 'subs') {
-        virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
-          tripResult.data,
-          scheduleLoader.scheduleData,
-          realVehicleIds
-        );
-      }
-      
-      // Combine real and virtual
-      allEntities = [...allEntities, ...virtualVehicles];
-      
-      // Update positions
-      virtualVehicleManager.updateVirtualPositions();
-    }
-    
-    res.json({
-      metadata: {
-        feedType: 'vehicle_positions',
-        operatorId,
-        fetchedAt: new Date().toISOString(),
-        url: vehicleResult.url,
-        entities: allEntities.length,
-        virtual_vehicles: virtualVehicles.length,
-        real_vehicles: (vehicleResult.data?.entity?.length || 0),
-        virtual_mode: mode,
-        include_virtual: includeVirtual
-      },
-      data: {
-        ...vehicleResult.data,
-        entity: allEntities
-      }
-    });
+    res.json(response);
     
   } catch (error) {
     console.error('Error in /api/vehicle_positions:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
+    res.status(500).json({
+      error: 'Failed to fetch vehicle positions',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Test endpoint for block_id enrichment
+app.get('/api/test_block_id', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    console.log(`Testing block_id enrichment for operator ${operatorId}`);
+    
+    // Fetch real vehicles
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    
+    if (!vehicleResult.success) {
+      return res.status(500).json({
+        error: 'Failed to fetch vehicles',
+        details: vehicleResult.error
+      });
+    }
+    
+    // Load schedule
+    await scheduleLoader.loadSchedules(operatorId);
+    
+    // Analyze vehicles before enrichment
+    const vehicles = vehicleResult.data?.entity || [];
+    const vehiclesWithTripId = vehicles.filter(v => v.vehicle?.trip?.tripId).length;
+    const vehiclesWithBlockIdBefore = vehicles.filter(v => v.vehicle?.trip?.blockId).length;
+    
+    // Enrich with block_id
+    const enrichedVehicles = addBlockIdToVehicles(vehicles, scheduleLoader.scheduleData);
+    const vehiclesWithBlockIdAfter = enrichedVehicles.filter(v => v.vehicle?.trip?.blockId).length;
+    
+    // Sample some vehicles
+    const sampleVehicles = enrichedVehicles.slice(0, 5).map(v => ({
+      id: v.vehicle?.vehicle?.id,
+      trip_id: v.vehicle?.trip?.tripId,
+      route_id: v.vehicle?.trip?.routeId,
+      block_id: v.vehicle?.trip?.blockId || 'NONE',
+      has_block_id: !!v.vehicle?.trip?.blockId
+    }));
+    
+    res.json({
+      test: 'block_id_enrichment',
+      operatorId,
+      schedule_loaded: !!scheduleLoader.scheduleData,
+      schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0,
+      vehicle_stats: {
+        total_vehicles: vehicles.length,
+        vehicles_with_trip_id: vehiclesWithTripId,
+        with_block_id_before: vehiclesWithBlockIdBefore,
+        with_block_id_after: vehiclesWithBlockIdAfter,
+        newly_enriched: vehiclesWithBlockIdAfter - vehiclesWithBlockIdBefore
+      },
+      sample_vehicles: sampleVehicles,
+      schedule_sample: scheduleLoader.scheduleData?.trips?.slice(0, 3).map(t => ({
+        trip_id: t.trip_id,
+        block_id: t.block_id || 'NONE',
+        route_id: t.route_id
+      })) || []
+    });
+    
+  } catch (error) {
+    console.error('Error in /api/test_block_id:', error);
+    res.status(500).json({
+      error: 'Test failed',
+      details: error.message
+    });
   }
 });
 
