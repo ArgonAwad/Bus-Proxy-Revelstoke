@@ -825,7 +825,7 @@ app.get('/api/virtual_config', (req, res) => {
   });
 });
 
-// Root endpoint with HTML interface
+// Root endpoint with HTML interface (updated with virtual-only endpoints)
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -833,32 +833,12 @@ app.get('/', (req, res) => {
     <head>
       <title>🚌 BC Transit GTFS-RT Proxy with Virtual Vehicles</title>
       <style>
-        body { 
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-          max-width: 800px; 
-          margin: 40px auto; 
-          padding: 20px; 
-          line-height: 1.6;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
         h2 { color: #34495e; margin-top: 30px; }
-        .endpoint { 
-          background: #f8f9fa; 
-          padding: 15px; 
-          margin: 10px 0; 
-          border-left: 4px solid #3498db; 
-          border-radius: 4px;
-        }
-        .ghost-endpoint { 
-          background: #f0f8ff; 
-          border-left: 4px solid #7b68ee;
-        }
-        code { 
-          background: #e8f4f8; 
-          padding: 2px 6px; 
-          border-radius: 3px; 
-          font-family: 'Courier New', monospace;
-        }
+        .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #3498db; border-radius: 4px; }
+        .ghost-endpoint { background: #f0f8ff; border-left: 4px solid #7b68ee; }
+        code { background: #e8f4f8; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; }
         .operator { display: inline-block; background: #e8f6f3; padding: 4px 8px; margin: 2px; border-radius: 3px; }
         a { color: #2980b9; text-decoration: none; }
         a:hover { text-decoration: underline; }
@@ -869,92 +849,89 @@ app.get('/', (req, res) => {
     <body>
       <h1>👻🚌 BC Transit Proxy with Virtual Vehicles</h1>
       <p>Real-time BC Transit data with virtual (ghost) buses for scheduled trips without GPS tracking</p>
-      
+     
       <div class="note">
-        <strong>✨ New Feature:</strong> Virtual vehicles automatically appear as ghost buses for scheduled trips that don't have real-time tracking.
-        Look for <span class="ghost">"is_virtual": true</span> in the vehicle data.
+        <strong>✨ Virtual Vehicles:</strong> Appear automatically for scheduled trips missing real-time tracking.
+        Look for <span class="ghost">"is_virtual": true</span> in vehicle data.
       </div>
-      
-      <h2>📡 Available Endpoints:</h2>
-      
+
+      <h2>📡 Main Endpoints</h2>
+
       <div class="endpoint">
         <strong>GET <code>/api/buses</code></strong>
-        <p>Get all real-time feeds combined (vehicle positions, trip updates, alerts) with virtual vehicles</p>
+        <p>All feeds combined (vehicle positions + trip updates + alerts) with virtual vehicles</p>
         <p>Default: Revelstoke (36)</p>
-        <p>Try: 
-          <a href="/api/buses" target="_blank">Revelstoke</a> | 
-          <a href="/api/buses?operatorId=47" target="_blank">Kelowna</a> | 
+        <p>Examples:
+          <a href="/api/buses" target="_blank">Revelstoke</a> |
+          <a href="/api/buses?operatorId=47" target="_blank">Kelowna</a> |
           <a href="/api/buses?operatorId=48" target="_blank">Victoria</a>
         </p>
       </div>
-      
+
       <div class="endpoint">
         <strong>GET <code>/api/vehicle_positions</code></strong>
-        <p>Vehicle positions and status only (with virtual vehicles)</p>
-        <p>Add <code>?virtual=false</code> to disable virtual vehicles</p>
+        <p>Vehicle positions only (with optional virtuals)</p>
+        <p>Params: <code>?virtual=false</code> (disable virtuals), <code>?virtual_mode=all</code> or <code>subs</code></p>
         <p><a href="/api/vehicle_positions" target="_blank">Try it</a></p>
       </div>
-      
-      <div class="endpoint ghost-endpoint">
-        <strong>GET <code>/api/debug_virtual</code></strong>
-        <p>Debug information about virtual vehicles</p>
-        <p><a href="/api/debug_virtual" target="_blank">Try it</a></p>
+
+      <div class="endpoint">
+        <strong>GET <code>/api/trip_updates</code></strong> — Trip predictions and schedule updates
+        <p><a href="/api/trip_updates" target="_blank">Try it</a></p>
       </div>
-      
-      <div class="endpoint ghost-endpoint">
-        <strong>GET <code>/api/virtual_info</code></strong>
-        <p>Information about active virtual vehicles</p>
-        <p><a href="/api/virtual_info" target="_blank">Try it</a></p>
+
+      <div class="endpoint">
+        <strong>GET <code>/api/service_alerts</code></strong> — Service alerts and notifications
+        <p><a href="/api/service_alerts" target="_blank">Try it</a></p>
       </div>
-      
-      <h2>🏙️ Supported Operators:</h2>
+
+      <h2>👻 Virtual-Only Feeds (Perfect for Revyhub Testing/Overlay)</h2>
+
+      <div class="ghost-endpoint">
+        <strong>GET <code>/api/virtuals</code></strong>
+        <p>All scheduled trips shown as virtual buses (matches /api/buses structure exactly)</p>
+        <p>Ideal for Revyhub: same nested format (metadata + data), only virtuals in vehicle_positions</p>
+        <p><a href="/api/virtuals" target="_blank">Revelstoke virtuals</a> | <a href="/api/virtuals?operatorId=47" target="_blank">Kelowna</a></p>
+      </div>
+
+      <div class="ghost-endpoint">
+        <strong>GET <code>/api/virtual_positions</code></strong>
+        <p>All scheduled trips as virtual buses (flat GTFS-RT format: header + entity)</p>
+        <p>Good for direct GTFS-RT clients</p>
+        <p><a href="/api/virtual_positions" target="_blank">Try it</a></p>
+      </div>
+
+      <div class="ghost-endpoint">
+        <strong>GET <code>/api/virtual_subs</code></strong>
+        <p>Substitute virtual buses only (for trips missing real-time data)</p>
+        <p>Flat format</p>
+        <p><a href="/api/virtual_subs" target="_blank">Try it</a></p>
+      </div>
+
+      <h2>🔧 Utility & Debug Endpoints</h2>
+      <ul>
+        <li><a href="/api/health" target="_blank">/api/health</a> — Server health check</li>
+        <li><a href="/api/info" target="_blank">/api/info</a> — API documentation</li>
+        <li><a href="/api/cleanup_virtual" target="_blank">/api/cleanup_virtual</a> — Clean up old virtuals</li>
+        <li><a href="/api/debug_virtual" target="_blank">/api/debug_virtual</a> — Debug virtual creation</li>
+        <li><a href="/api/virtual_info" target="_blank">/api/virtual_info</a> — Active virtuals list</li>
+        <li><a href="/api/virtual_config?mode=all" target="_blank">/api/virtual_config</a> — Change mode / max buses</li>
+      </ul>
+
+      <h2>Supported Operators</h2>
       <div>
         <span class="operator">36: Revelstoke</span>
         <span class="operator">47: Kelowna</span>
         <span class="operator">48: Victoria</span>
       </div>
-      
-      <h2>🔧 Utility Endpoints:</h2>
-      <ul>
-        <li><a href="/api/health" target="_blank">/api/health</a> - Server health check</li>
-        <li><a href="/api/info" target="_blank">/api/info</a> - API documentation</li>
-        <li><a href="/api/cleanup_virtual" target="_blank">/api/cleanup_virtual</a> - Clean up old virtual vehicles</li>
-      </ul>
-      
-      <h2>👻 Virtual Vehicles:</h2>
-      <p>Virtual vehicles appear when:</p>
-      <ul>
-        <li>A trip is scheduled (in trip updates)</li>
-        <li>No real vehicle is transmitting GPS for that trip</li>
-        <li>Position is estimated from schedule data</li>
-      </ul>
-      <p>They appear in the feed with <code>"is_virtual": true</code> and can be styled as ghost buses on your map.</p>
-      
-      <h2>📚 Usage Examples:</h2>
-      <pre><code>// Get Revelstoke buses with virtual vehicles (default)
-fetch('/api/buses')
-  .then(r => r.json())
-  .then(data => {
-    const allBuses = data.data.vehicle_positions.entity || [];
-    const realBuses = allBuses.filter(b => !b.vehicle?.vehicle?.is_virtual);
-    const ghostBuses = allBuses.filter(b => b.vehicle?.vehicle?.is_virtual);
-    console.log(realBuses.length + ' real buses, ' + ghostBuses.length + ' ghost buses');
-  })
 
-// Get vehicle positions without virtual vehicles
-fetch('/api/vehicle_positions?virtual=false')
-  .then(r => r.json())
-  .then(data => console.log(data))
-
-// Debug virtual vehicle system
-fetch('/api/debug_virtual')
-  .then(r => r.json())
-  .then(data => console.log('Trips needing ghost buses:', data.tripsWithoutVehicles))</code></pre>
+      <p style="margin-top: 40px; text-align: center; color: #777;">
+        Proxy Version 3.0 • Virtual Vehicles Active • <a href="/api/info">Full API Info</a>
+      </p>
     </body>
     </html>
   `);
 });
-
 // Debug endpoint to check schedule data
 app.get('/api/debug_schedule', async (req, res) => {
   try {
