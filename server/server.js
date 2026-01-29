@@ -78,33 +78,56 @@ async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
   }
 }
 
-// Fix vehicle structure to match what tracker expects
+// CORRECTED: Fix vehicle structure to match what tracker expects
 function fixVehicleStructure(vehicleEntity) {
   if (!vehicleEntity.vehicle) return vehicleEntity;
   
   const vehicleData = vehicleEntity.vehicle;
   
-  // Check if we have the nested vehicle structure
-  if (vehicleData.vehicle && vehicleData.trip) {
-    // This is the new structure, convert it to the old one
+  // DEBUG: Log the structure
+  console.log('DEBUG fixVehicleStructure:', {
+    hasVehicle: !!vehicleData,
+    hasNestedVehicle: !!vehicleData.vehicle,
+    vehicleKeys: Object.keys(vehicleData),
+    nestedVehicleKeys: vehicleData.vehicle ? Object.keys(vehicleData.vehicle) : 'none'
+  });
+  
+  // Check if we have the problematic nested structure
+  // Current structure: vehicle.vehicle is nested inside vehicle object
+  // Desired structure: vehicle.vehicle should be at the same level as vehicle.trip, vehicle.position
+  if (vehicleData.vehicle && typeof vehicleData.vehicle === 'object') {
+    // Extract the nested vehicle info
+    const nestedVehicle = vehicleData.vehicle;
+    
+    // Create new structure matching what tracker expects
+    const fixedVehicle = {
+      trip: vehicleData.trip || null,
+      vehicle: {
+        id: nestedVehicle.id || '',
+        label: nestedVehicle.label || '',
+        licensePlate: nestedVehicle.licensePlate || '',
+        wheelchairAccessible: nestedVehicle.wheelchairAccessible || 0
+      },
+      position: vehicleData.position || null,
+      timestamp: vehicleData.timestamp || null,
+      congestionLevel: vehicleData.congestionLevel || null,
+      occupancyStatus: vehicleData.occupancyStatus || null,
+      occupancyPercentage: vehicleData.occupancyPercentage || null,
+      currentStopSequence: vehicleData.currentStopSequence || null,
+      currentStatus: vehicleData.currentStatus || null,
+      stopId: vehicleData.stopId || null,
+      // Copy other fields that might be needed
+      multiCarriageDetails: vehicleData.multiCarriageDetails || []
+    };
+    
+    // Return the fixed entity
     return {
       ...vehicleEntity,
-      vehicle: {
-        trip: vehicleData.trip,
-        vehicle: vehicleData.vehicle,
-        position: vehicleData.position || null,
-        timestamp: vehicleData.timestamp || null,
-        congestionLevel: vehicleData.congestionLevel || null,
-        occupancyStatus: vehicleData.occupancyStatus || null,
-        occupancyPercentage: vehicleData.occupancyPercentage || null,
-        currentStopSequence: vehicleData.currentStopSequence || null,
-        currentStatus: vehicleData.currentStatus || null,
-        stopId: vehicleData.stopId || null
-      }
+      vehicle: fixedVehicle
     };
   }
   
-  // Already in correct structure
+  // Already in correct structure (virtual vehicles usually are)
   return vehicleEntity;
 }
 
@@ -199,8 +222,29 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, inc
     let virtualVehicles = [];
 
     if (vehicleResult.success && vehicleResult.data?.entity) {
+      // Log first vehicle structure before fixing
+      if (vehicleResult.data.entity.length > 0) {
+        const firstVehicle = vehicleResult.data.entity[0];
+        console.log('BEFORE FIX - First vehicle structure:', {
+          hasVehicle: !!firstVehicle.vehicle,
+          hasNestedVehicle: !!firstVehicle.vehicle?.vehicle,
+          vehicleKeys: firstVehicle.vehicle ? Object.keys(firstVehicle.vehicle) : 'none'
+        });
+      }
+      
       // Fix structure and enrich real vehicles with blockId
       enrichedVehicles = addBlockIdToVehicles(vehicleResult.data.entity, scheduleLoader.scheduleData);
+      
+      // Log first vehicle structure after fixing
+      if (enrichedVehicles.length > 0) {
+        const firstFixedVehicle = enrichedVehicles[0];
+        console.log('AFTER FIX - First vehicle structure:', {
+          hasVehicle: !!firstFixedVehicle.vehicle,
+          hasVehicleVehicle: !!firstFixedVehicle.vehicle?.vehicle,
+          vehicleKeys: firstFixedVehicle.vehicle ? Object.keys(firstFixedVehicle.vehicle) : 'none'
+        });
+      }
+      
       console.log(`🔄 Fixed structure for ${enrichedVehicles.length} vehicles`);
     }
 
@@ -314,18 +358,6 @@ app.get('/api/buses', async (req, res) => {
     const vehiclesWithBlockId = countEntitiesWithBlockId(enhancedVehicleResult.data?.entity, 'vehicle');
     const tripUpdatesWithBlockId = countEntitiesWithBlockId(enhancedTripResult.data?.entity, 'tripUpdate');
 
-    // DEBUG: Check vehicle structure
-    if (enhancedVehicleResult.data?.entity?.length > 0) {
-      const sampleVehicle = enhancedVehicleResult.data.entity[0];
-      console.log('DEBUG Vehicle structure:', {
-        hasVehicle: !!sampleVehicle.vehicle,
-        hasNestedVehicle: !!sampleVehicle.vehicle?.vehicle,
-        hasTrip: !!sampleVehicle.vehicle?.trip,
-        hasPosition: !!sampleVehicle.vehicle?.position,
-        structure: Object.keys(sampleVehicle.vehicle || {})
-      });
-    }
-
     const response = {
       metadata: {
         operatorId,
@@ -394,6 +426,125 @@ app.get('/api/buses', async (req, res) => {
   }
 });
 
+// ==================== TESTING ENDPOINTS ====================
+
+// Simple test endpoint to check the actual vehicle structure
+app.get('/api/test_structure', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+
+    if (!vehicleResult.success || !vehicleResult.data?.entity) {
+      return res.json({ error: 'No vehicle data' });
+    }
+
+    const sampleVehicle = vehicleResult.data.entity[0];
+    const fixedVehicle = fixVehicleStructure(sampleVehicle);
+    
+    // Sample what a vehicle should look like for the tracker
+    const expectedStructure = {
+      vehicle: {
+        trip: {
+          tripId: "SOME_TRIP_ID",
+          routeId: "SOME_ROUTE",
+          // blockId: "SOME_BLOCK" // This is what we want to add
+        },
+        vehicle: {  // This should be at this level, not nested inside another vehicle object
+          id: "VEHICLE_ID",
+          label: "VEHICLE_LABEL",
+          licensePlate: "",
+          wheelchairAccessible: 0
+        },
+        position: {
+          latitude: 50.0,
+          longitude: -118.0,
+          bearing: 0,
+          speed: 0
+        },
+        timestamp: 1234567890,
+        currentStopSequence: 1,
+        currentStatus: "IN_TRANSIT_TO",
+        stopId: "STOP_ID"
+      }
+    };
+
+    res.json({
+      original_structure: {
+        vehicle: sampleVehicle.vehicle,
+        keys: sampleVehicle.vehicle ? Object.keys(sampleVehicle.vehicle) : [],
+        has_vehicle_nested: !!sampleVehicle.vehicle?.vehicle
+      },
+      fixed_structure: {
+        vehicle: fixedVehicle.vehicle,
+        keys: fixedVehicle.vehicle ? Object.keys(fixedVehicle.vehicle) : [],
+        has_vehicle_at_correct_level: !!fixedVehicle.vehicle?.vehicle
+      },
+      expected_structure: expectedStructure,
+      explanation: "Tracker expects: vehicle.vehicle at same level as vehicle.trip, not nested inside"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Quick test to see if vehicles will show in tracker
+app.get('/api/test_tracker_compatibility', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+
+    if (!vehicleResult.success || !vehicleResult.data?.entity) {
+      return res.json({ error: 'No vehicle data' });
+    }
+
+    const sampleVehicle = vehicleResult.data.entity[0];
+    const fixedVehicle = fixVehicleStructure(sampleVehicle);
+    
+    // Check if structure matches what tracker needs
+    const hasCorrectStructure = 
+      fixedVehicle.vehicle && 
+      fixedVehicle.vehicle.trip && 
+      fixedVehicle.vehicle.vehicle && 
+      fixedVehicle.vehicle.position;
+    
+    const structureCheck = {
+      has_vehicle: !!fixedVehicle.vehicle,
+      has_trip: !!fixedVehicle.vehicle?.trip,
+      has_vehicle_at_correct_level: !!fixedVehicle.vehicle?.vehicle,
+      has_position: !!fixedVehicle.vehicle?.position,
+      vehicle_id: fixedVehicle.vehicle?.vehicle?.id,
+      trip_id: fixedVehicle.vehicle?.trip?.tripId,
+      is_correct_structure: hasCorrectStructure
+    };
+
+    res.json({
+      compatibility_check: structureCheck,
+      sample_vehicle_after_fix: {
+        id: fixedVehicle.id,
+        vehicle: {
+          trip: {
+            tripId: fixedVehicle.vehicle?.trip?.tripId,
+            routeId: fixedVehicle.vehicle?.trip?.routeId,
+            blockId: fixedVehicle.vehicle?.trip?.blockId || 'NOT_SET'
+          },
+          vehicle: {
+            id: fixedVehicle.vehicle?.vehicle?.id,
+            label: fixedVehicle.vehicle?.vehicle?.label
+          },
+          position: fixedVehicle.vehicle?.position
+        }
+      },
+      verdict: hasCorrectStructure ? 
+        "✅ Structure should work with tracker" : 
+        "❌ Structure still wrong for tracker"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== EXISTING ENDPOINTS (simplified) ====================
+
 // Vehicle positions endpoint
 app.get('/api/vehicle_positions', async (req, res) => {
   try {
@@ -437,28 +588,16 @@ app.get('/api/trip_updates', async (req, res) => {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const result = await fetchGTFSFeed('tripupdates.pb', operatorId);
 
-    // Load schedule for blockId
-    await scheduleLoader.loadSchedules(operatorId);
-
-    let enrichedData = result.data;
-    if (result.success && result.data?.entity) {
-      enrichedData = {
-        ...result.data,
-        entity: addBlockIdToTripUpdates(result.data.entity, scheduleLoader.scheduleData)
-      };
-    }
-
     if (result.success) {
       res.json({
         metadata: {
           feedType: 'trip_updates',
           operatorId,
           fetchedAt: result.timestamp,
-          block_id_enabled: true,
           url: result.url,
           entities: result.data.entity?.length || 0
         },
-        data: enrichedData
+        data: result.data
       });
     } else {
       res.status(500).json({
@@ -474,212 +613,7 @@ app.get('/api/trip_updates', async (req, res) => {
   }
 });
 
-// Service alerts endpoint
-app.get('/api/service_alerts', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    const result = await fetchGTFSFeed('alerts.pb', operatorId);
-
-    if (result.success) {
-      res.json({
-        metadata: {
-          feedType: 'service_alerts',
-          operatorId,
-          fetchedAt: result.timestamp,
-          url: result.url,
-          entities: result.data.entity?.length || 0
-        },
-        data: result.data
-      });
-    } else {
-      res.status(500).json({
-        error: 'Failed to fetch service alerts',
-        details: result.error,
-        url: result.url,
-        timestamp: result.timestamp
-      });
-    }
-  } catch (error) {
-    console.error('Error in /api/service_alerts:', error);
-    res.status(500).json({ error: 'Server error', details: error.message });
-  }
-});
-
-// ==================== TESTING ENDPOINTS ====================
-
-// Test endpoint to check vehicle structure
-app.get('/api/test_vehicle_structure', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-
-    if (!vehicleResult.success || !vehicleResult.data?.entity) {
-      return res.json({ error: 'No vehicle data' });
-    }
-
-    const sampleVehicle = vehicleResult.data.entity[0];
-    const fixedVehicle = fixVehicleStructure(sampleVehicle);
-
-    res.json({
-      original_structure: {
-        keys: Object.keys(sampleVehicle),
-        vehicle_keys: sampleVehicle.vehicle ? Object.keys(sampleVehicle.vehicle) : 'No vehicle',
-        has_nested_vehicle: !!sampleVehicle.vehicle?.vehicle,
-        nested_vehicle_keys: sampleVehicle.vehicle?.vehicle ? Object.keys(sampleVehicle.vehicle.vehicle) : 'No nested vehicle'
-      },
-      fixed_structure: {
-        keys: Object.keys(fixedVehicle),
-        vehicle_keys: fixedVehicle.vehicle ? Object.keys(fixedVehicle.vehicle) : 'No vehicle',
-        has_nested_vehicle: !!fixedVehicle.vehicle?.vehicle,
-        vehicle_structure_sample: {
-          has_trip: !!fixedVehicle.vehicle?.trip,
-          has_vehicle: !!fixedVehicle.vehicle?.vehicle,
-          has_position: !!fixedVehicle.vehicle?.position,
-          trip_id: fixedVehicle.vehicle?.trip?.tripId,
-          vehicle_id: fixedVehicle.vehicle?.vehicle?.id
-        }
-      },
-      explanation: fixedVehicle.vehicle?.vehicle ? 
-        "✓ Fixed structure: vehicle.vehicle is now at the correct level" :
-        "✗ Still has nested vehicle structure"
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test endpoint for block_id enrichment
-app.get('/api/test_block_id', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    console.log(`Testing block_id enrichment for operator ${operatorId}`);
-
-    // Fetch real vehicles
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-
-    if (!vehicleResult.success) {
-      return res.status(500).json({
-        error: 'Failed to fetch vehicles',
-        details: vehicleResult.error
-      });
-    }
-
-    // Load schedule
-    await scheduleLoader.loadSchedules(operatorId);
-
-    // Analyze vehicles
-    const vehicles = vehicleResult.data?.entity || [];
-    const fixedVehicles = vehicles.map(v => fixVehicleStructure(v));
-    const enrichedVehicles = addBlockIdToVehicles(fixedVehicles, scheduleLoader.scheduleData);
-
-    // Sample some vehicles
-    const sampleVehicles = enrichedVehicles.slice(0, 3).map(v => ({
-      id: v.vehicle?.vehicle?.id,
-      trip_id: v.vehicle?.trip?.tripId,
-      route_id: v.vehicle?.trip?.routeId,
-      block_id: v.vehicle?.trip?.blockId || 'NONE',
-      has_block_id: !!v.vehicle?.trip?.blockId,
-      structure: {
-        has_vehicle_at_root: !!v.vehicle?.vehicle,
-        has_trip: !!v.vehicle?.trip,
-        has_position: !!v.vehicle?.position
-      }
-    }));
-
-    res.json({
-      test: 'block_id_enrichment',
-      operatorId,
-      schedule_loaded: !!scheduleLoader.scheduleData,
-      schedule_trips_count: scheduleLoader.scheduleData?.trips?.length || 0,
-      vehicle_stats: {
-        total_vehicles: vehicles.length,
-        with_block_id: countEntitiesWithBlockId(enrichedVehicles, 'vehicle')
-      },
-      sample_vehicles: sampleVehicles,
-      schedule_sample: scheduleLoader.scheduleData?.trips?.slice(0, 3).map(t => ({
-        trip_id: t.trip_id,
-        block_id: t.block_id || 'NONE',
-        route_id: t.route_id
-      })) || []
-    });
-
-  } catch (error) {
-    console.error('Error in /api/test_block_id:', error);
-    res.status(500).json({
-      error: 'Test failed',
-      details: error.message
-    });
-  }
-});
-
-// ==================== EXISTING ENDPOINTS (minimal changes) ====================
-
-// Debug endpoint for virtual vehicles
-app.get('/api/debug_virtual', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-
-    // Load schedule
-    await scheduleLoader.loadSchedules(operatorId);
-
-    // Get trip updates
-    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-
-    const tripsWithoutVehicles = [];
-    tripResult.data?.entity?.forEach((trip, index) => {
-      if (trip.tripUpdate && !trip.tripUpdate.vehicle?.id) {
-        tripsWithoutVehicles.push({
-          index,
-          tripId: trip.tripUpdate.trip?.tripId,
-          routeId: trip.tripUpdate.trip?.routeId,
-          stopCount: trip.tripUpdate.stopTimeUpdate?.length || 0,
-          startTime: trip.tripUpdate.trip?.startTime,
-          vehiclePresent: !!trip.tripUpdate.vehicle?.id
-        });
-      }
-    });
-
-    res.json({
-      totalTrips: tripResult.data?.entity?.length || 0,
-      tripsWithoutVehicles: tripsWithoutVehicles.length,
-      trips: tripsWithoutVehicles,
-      virtualVehiclesCreated: virtualVehicleManager.getVirtualVehicleCount(),
-      activeVirtualVehicles: virtualVehicleManager.getAllVirtualVehicles().map(v => ({
-        tripId: v.vehicle?.trip?.tripId,
-        routeId: v.vehicle?.trip?.routeId,
-        blockId: v.vehicle?.trip?.blockId || 'NONE',
-        position: v.vehicle?.position
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Health check endpoint
-app.get('/api/health', async (req, res) => {
-  try {
-    const result = await fetchGTFSFeed('vehicleupdates.pb', DEFAULT_OPERATOR_ID);
-    res.json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      feedsAvailable: result.success,
-      protoLoaded: root !== null,
-      defaultOperator: DEFAULT_OPERATOR_ID,
-      virtualSystem: 'active',
-      blockIdSupported: true
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Root endpoint with HTML interface
+// Root endpoint with HTML
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -689,7 +623,6 @@ app.get('/', (req, res) => {
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-        h2 { color: #34495e; margin-top: 30px; }
         .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #3498db; border-radius: 4px; }
         code { background: #e8f4f8; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; }
         a { color: #2980b9; text-decoration: none; }
@@ -702,44 +635,24 @@ app.get('/', (req, res) => {
       <p>Real-time bus data for BC Transit systems</p>
      
       <div class="note">
-        <strong>⚠️ IMPORTANT:</strong> Vehicle structure has been fixed to match tracker expectations.
+        <strong>🔄 Vehicle Structure Fix Applied</strong> - Vehicles should now appear in tracker
       </div>
 
       <h2>📡 Main Endpoints</h2>
 
       <div class="endpoint">
         <strong>GET <code>/api/buses</code></strong>
-        <p>All feeds combined with virtual vehicles and blockId</p>
+        <p>All feeds combined with virtual vehicles</p>
         <p>Default: Revelstoke (36)</p>
-        <p><a href="/api/buses" target="_blank">Try it</a> | 
-           <a href="/api/buses?operatorId=47" target="_blank">Kelowna</a> | 
-           <a href="/api/buses?operatorId=48" target="_blank">Victoria</a>
-        </p>
-      </div>
-
-      <div class="endpoint">
-        <strong>GET <code>/api/vehicle_positions</code></strong>
-        <p>Vehicle positions only</p>
-        <p><a href="/api/vehicle_positions" target="_blank">Try it</a></p>
-      </div>
-
-      <div class="endpoint">
-        <strong>GET <code>/api/trip_updates</code></strong>
-        <p>Trip predictions and schedule updates</p>
-        <p><a href="/api/trip_updates" target="_blank">Try it</a></p>
+        <p><a href="/api/buses" target="_blank">Try it</a></p>
       </div>
 
       <h2>🔧 Testing Endpoints</h2>
       <ul>
-        <li><a href="/api/test_vehicle_structure" target="_blank">/api/test_vehicle_structure</a> - Check vehicle structure fix</li>
-        <li><a href="/api/test_block_id" target="_blank">/api/test_block_id</a> - Test blockId enrichment</li>
-        <li><a href="/api/debug_virtual" target="_blank">/api/debug_virtual</a> - Debug virtual vehicles</li>
-        <li><a href="/api/health" target="_blank">/api/health</a> - Server health check</li>
+        <li><a href="/api/test_structure" target="_blank">/api/test_structure</a> - Check vehicle structure</li>
+        <li><a href="/api/test_tracker_compatibility" target="_blank">/api/test_tracker_compatibility</a> - Test tracker compatibility</li>
+        <li><a href="/api/vehicle_positions" target="_blank">/api/vehicle_positions</a> - Vehicle positions only</li>
       </ul>
-
-      <p style="margin-top: 40px; text-align: center; color: #777;">
-        Vehicle Structure Fixed • BlockId Supported • <a href="/api/health">Health Check</a>
-      </p>
     </body>
     </html>
   `);
