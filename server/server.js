@@ -75,7 +75,7 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID) {
     console.log(`🚀 Enhancing vehicle positions for operator ${operatorId}`);
     
     // Load schedule data
-    await scheduleLoader.loadSchedule(operatorId);
+    await scheduleLoader.loadSchedules(operatorId);
     
     // Fetch real vehicle positions
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
@@ -250,7 +250,7 @@ app.get('/api/buses', async (req, res) => {
     // Enhance vehicle positions with virtual vehicles
     let enhancedVehicleResult = vehicleResult;
     if (vehicleResult.success && tripResult.success) {
-      await scheduleLoader.loadSchedule(operatorId);
+      await scheduleLoader.loadSchedules(operatorId);
       
       // Get IDs of real vehicles
       const realVehicleIds = new Set();
@@ -360,7 +360,7 @@ app.get('/api/debug_virtual', async (req, res) => {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     
     // Load schedule
-    await scheduleLoader.loadSchedule(operatorId);
+    await scheduleLoader.loadSchedules(operatorId);
     
     // Get trip updates
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
@@ -508,7 +508,7 @@ app.get('/api/virtual_positions', async (req, res) => {
     virtualVehicleManager.setMode('all');
     
     // Load schedule
-    await scheduleLoader.loadSchedule(operatorId);
+    await scheduleLoader.loadSchedules(operatorId);
     
     // Get trip updates
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
@@ -564,7 +564,7 @@ app.get('/api/virtual_subs', async (req, res) => {
     virtualVehicleManager.setMode('subs');
     
     // Load schedule
-    await scheduleLoader.loadSchedule(operatorId);
+    await scheduleLoader.loadSchedules(operatorId);
     
     // Get real vehicle positions
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
@@ -652,7 +652,7 @@ app.get('/api/vehicle_positions', async (req, res) => {
     // Add virtual vehicles if enabled
     if (includeVirtual && tripResult.success) {
       // Load schedule
-      await scheduleLoader.loadSchedule(operatorId);
+      await scheduleLoader.loadSchedules(operatorId);
       
       // Get IDs of real vehicles
       const realVehicleIds = new Set();
@@ -874,7 +874,7 @@ app.get('/api/debug_schedule', async (req, res) => {
     console.log('🔍 Checking schedule data for operator:', operatorId);
     
     // Load schedule
-    const schedule = await scheduleLoader.loadSchedule(operatorId);
+    const schedule = await scheduleLoader.loadSchedules(operatorId);
     
     // Check what files exist
     const fs = await import('fs/promises');
