@@ -213,28 +213,32 @@ class VirtualVehicleManager {
     return { currentStop: lastStop, nextStop: null, progress: 0 };
   }
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData) {
-    if (!scheduleData || !scheduleData.stops) {
-      console.warn('No scheduleData.stops available for position calculation');
-      return { latitude: 50.9981, longitude: -118.1957, bearing: 0, speed: 0 };
-    }
-    const currentCoords = scheduleData.stops[currentStop.stopId];
-    if (!currentCoords || !currentCoords.lat || !currentCoords.lon) {
-      console.warn(`No coordinates for stop ${currentStop.stopId}`);
-      return { latitude: 50.9981, longitude: -118.1957, bearing: 0, speed: 0 };
-    }
-    let lat = currentCoords.lat;
-    let lon = currentCoords.lon;
-    if (progress > 0 && nextStop) {
-      const nextCoords = scheduleData.stops[nextStop.stopId];
-      if (nextCoords && nextCoords.lat && nextCoords.lon) {
-        lat = lat + (nextCoords.lat - lat) * progress;
-        lon = lon + (nextCoords.lon - lon) * progress;
-        const speed = 25; // km/h when moving
-        return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
-      }
-    }
-    return { latitude: lat, longitude: lon, bearing: 0, speed: 0 };
+  if (!scheduleData || !scheduleData.stops) {
+    console.warn('No scheduleData.stops available');
+    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
   }
+
+  const currentCoords = scheduleData.stops[currentStop.stopId];
+  if (!currentCoords || !currentCoords.lat || !currentCoords.lon) {
+    console.warn(`No coordinates for stop ${currentStop.stopId}`);
+    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
+  }
+
+  let lat = currentCoords.lat;
+  let lon = currentCoords.lon;
+  let speed = 0;
+
+  if (progress > 0 && nextStop) {
+    const nextCoords = scheduleData.stops[nextStop.stopId];
+    if (nextCoords && nextCoords.lat && nextCoords.lon) {
+      lat += (nextCoords.lat - lat) * progress;
+      lon += (nextCoords.lon - lon) * progress;
+      speed = 25; // or dynamic if you have dist/time
+    }
+  }
+
+  return { latitude: lat, longitude: lon, bearing: null, speed };
+}
   // Optional: Full shape interpolation (call this instead of stop-to-stop if shapes loaded)
   calculatePositionAlongShape(tripId, progress, scheduleData) {
     const trip = scheduleData.tripsMap?.[tripId];
