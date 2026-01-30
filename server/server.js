@@ -153,14 +153,14 @@ function addBlockIdToVehicles(vehicleEntities, scheduleData) {
     // Defensive deep copy to prevent mutation of protobuf objects
     const enrichedEntity = JSON.parse(JSON.stringify(fixedEntity));
 
-    // Already has blockId → skip
+    // Already has blockId - skip
     if (enrichedEntity.vehicle?.trip?.blockId) {
       return enrichedEntity;
     }
 
     const tripId = enrichedEntity.vehicle?.trip?.tripId;
     if (!tripId) {
-      return enrichedEntity; // No trip → nothing to enrich
+      return enrichedEntity; // No trip - nothing to enrich
     }
 
     let scheduledTrip = null;
