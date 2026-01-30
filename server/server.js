@@ -196,7 +196,7 @@ function addBlockIdToVehicles(vehicleEntities, scheduleData) {
   });
 }
 
-/ Helper to add blockId to trip update entities from schedule data
+// Helper to add blockId to trip update entities from schedule data
 function addBlockIdToTripUpdates(tripUpdateEntities, scheduleData) {
   if (!Array.isArray(tripUpdateEntities) || !scheduleData) {
     console.warn('addBlockIdToTripUpdates: Invalid input (no entities or scheduleData)');
