@@ -7,6 +7,7 @@ import virtualUpdater from './virtual-updater.js';
 import ScheduleLoader from './schedule-loader.js';
 
 const scheduleLoader = new ScheduleLoader();
+export { scheduleLoader };
 const app = express();
 app.use(cors());
 
