@@ -133,27 +133,61 @@ function fixVehicleStructure(vehicleEntity) {
 
 // Helper to add blockId to vehicle entities from schedule data
 function addBlockIdToVehicles(vehicleEntities, scheduleData) {
-  if (!vehicleEntities || !scheduleData?.trips) return vehicleEntities;
+  if (!Array.isArray(vehicleEntities) || !scheduleData) {
+    console.warn('addBlockIdToVehicles: Invalid input (no entities or scheduleData)');
+    return vehicleEntities || [];
+  }
 
-  return vehicleEntities.map(entity => {
-    // Fix the vehicle structure first
+  const tripsMap = scheduleData.tripsMap;   // preferred fast lookup
+  const tripsArray = scheduleData.trips;    // fallback slow lookup
+
+  if (!tripsMap && !Array.isArray(tripsArray)) {
+    console.warn('addBlockIdToVehicles: No tripsMap or trips array in scheduleData');
+    return vehicleEntities;
+  }
+
+  return vehicleEntities.map((entity) => {
+    // Fix structure first (your existing helper)
     const fixedEntity = fixVehicleStructure(entity);
-    
-    // Create a copy to avoid mutation
+
+    // Defensive deep copy to prevent mutation of protobuf objects
     const enrichedEntity = JSON.parse(JSON.stringify(fixedEntity));
 
-    // Skip if already has blockId
+    // Already has blockId → skip
     if (enrichedEntity.vehicle?.trip?.blockId) {
       return enrichedEntity;
     }
 
-    // Try to get block_id from schedule data
-    if (enrichedEntity.vehicle?.trip?.tripId) {
-      const tripId = enrichedEntity.vehicle.trip.tripId;
-      const scheduledTrip = scheduleData.trips.find(t => t.trip_id === tripId);
+    const tripId = enrichedEntity.vehicle?.trip?.tripId;
+    if (!tripId) {
+      return enrichedEntity; // No trip → nothing to enrich
+    }
 
-      if (scheduledTrip?.block_id) {
-        enrichedEntity.vehicle.trip.blockId = scheduledTrip.block_id;
+    let scheduledTrip = null;
+
+    // Preferred: use map lookup
+    if (tripsMap && typeof tripsMap === 'object') {
+      scheduledTrip = tripsMap[tripId];
+    } 
+    // Fallback: linear search on array (slower, but works)
+    else if (Array.isArray(tripsArray)) {
+      scheduledTrip = tripsArray.find(t => t.trip_id === tripId);
+    }
+
+    if (scheduledTrip?.block_id) {
+      // Ensure trip object exists
+      if (!enrichedEntity.vehicle.trip) {
+        enrichedEntity.vehicle.trip = {};
+      }
+      enrichedEntity.vehicle.trip.blockId = scheduledTrip.block_id;
+      // Optional: also add route_id / other fields if useful later
+      // enrichedEntity.vehicle.trip.routeId = scheduledTrip.route_id;
+    } else {
+      // Debug why it failed
+      if (!scheduledTrip) {
+        console.debug(`BlockId skip: trip_id ${tripId} not found in schedule`);
+      } else {
+        console.debug(`BlockId skip: trip_id ${tripId} has no block_id`);
       }
     }
 
@@ -161,26 +195,53 @@ function addBlockIdToVehicles(vehicleEntities, scheduleData) {
   });
 }
 
-// Helper to add blockId to trip update entities from schedule data
+/ Helper to add blockId to trip update entities from schedule data
 function addBlockIdToTripUpdates(tripUpdateEntities, scheduleData) {
-  if (!tripUpdateEntities || !scheduleData?.trips) return tripUpdateEntities;
+  if (!Array.isArray(tripUpdateEntities) || !scheduleData) {
+    console.warn('addBlockIdToTripUpdates: Invalid input (no entities or scheduleData)');
+    return tripUpdateEntities || [];
+  }
 
-  return tripUpdateEntities.map(entity => {
-    // Create a copy to avoid mutation
+  const tripsMap = scheduleData.tripsMap;   // preferred
+  const tripsArray = scheduleData.trips;    // fallback
+
+  if (!tripsMap && !Array.isArray(tripsArray)) {
+    console.warn('addBlockIdToTripUpdates: No tripsMap or trips array in scheduleData');
+    return tripUpdateEntities;
+  }
+
+  return tripUpdateEntities.map((entity) => {
+    // Defensive deep copy
     const enrichedEntity = JSON.parse(JSON.stringify(entity));
 
-    // Skip if already has blockId
+    // Already enriched → skip
     if (enrichedEntity.tripUpdate?.trip?.blockId) {
       return enrichedEntity;
     }
 
-    // Try to get block_id from schedule data
-    if (enrichedEntity.tripUpdate?.trip?.tripId) {
-      const tripId = enrichedEntity.tripUpdate.trip.tripId;
-      const scheduledTrip = scheduleData.trips.find(t => t.trip_id === tripId);
+    const tripId = enrichedEntity.tripUpdate?.trip?.tripId;
+    if (!tripId) {
+      return enrichedEntity;
+    }
 
-      if (scheduledTrip?.block_id) {
-        enrichedEntity.tripUpdate.trip.blockId = scheduledTrip.block_id;
+    let scheduledTrip = null;
+
+    if (tripsMap && typeof tripsMap === 'object') {
+      scheduledTrip = tripsMap[tripId];
+    } else if (Array.isArray(tripsArray)) {
+      scheduledTrip = tripsArray.find(t => t.trip_id === tripId);
+    }
+
+    if (scheduledTrip?.block_id) {
+      if (!enrichedEntity.tripUpdate.trip) {
+        enrichedEntity.tripUpdate.trip = {};
+      }
+      enrichedEntity.tripUpdate.trip.blockId = scheduledTrip.block_id;
+    } else {
+      if (!scheduledTrip) {
+        console.debug(`BlockId skip (trip update): trip_id ${tripId} not found`);
+      } else {
+        console.debug(`BlockId skip (trip update): trip_id ${tripId} no block_id`);
       }
     }
 
