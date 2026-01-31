@@ -5,6 +5,8 @@ import protobuf from 'protobufjs';
 import virtualVehicleManager from './virtual-vehicles.js';
 import virtualUpdater from './virtual-updater.js';
 import ScheduleLoader from './schedule-loader.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 const scheduleLoader = new ScheduleLoader();
 
@@ -540,6 +542,518 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+import fs from 'fs/promises';
+import path from 'path';
+
+// Add this to your debugging endpoints section
+app.get('/api/debug/csv-raw', async (req, res) => {
+  try {
+    const { file, limit, showall } = req.query;
+    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    
+    // List available files
+    const files = await fs.readdir(SCHEDULE_DIR);
+    const txtFiles = files.filter(f => f.endsWith('.txt'));
+    
+    // If specific file requested
+    if (file) {
+      if (!txtFiles.includes(file)) {
+        return res.status(404).json({
+          error: 'File not found',
+          available_files: txtFiles,
+          requested: file
+        });
+      }
+      
+      const filePath = path.join(SCHEDULE_DIR, file);
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const headers = lines[0] ? lines[0].split(',') : [];
+      
+      const rowLimit = parseInt(limit) || (showall === 'true' ? lines.length : 50);
+      const limitedLines = lines.slice(0, Math.min(rowLimit, lines.length));
+      
+      // Parse CSV rows
+      const data = limitedLines.map((line, index) => {
+        if (index === 0) return { row: 0, type: 'header', values: headers };
+        
+        const values = line.split(',');
+        const rowData = {};
+        headers.forEach((header, i) => {
+          rowData[header.trim()] = values[i] ? values[i].trim() : '';
+        });
+        
+        return {
+          row: index,
+          type: 'data',
+          values: values,
+          parsed: rowData
+        };
+      });
+      
+      return res.json({
+        file,
+        path: filePath,
+        stats: {
+          total_lines: lines.length,
+          data_rows: lines.length - 1,
+          showing_rows: limitedLines.length - 1,
+          headers_count: headers.length,
+          file_size_bytes: content.length
+        },
+        headers: headers,
+        sample_data: data
+      });
+    }
+    
+    // Return list of files with previews
+    const filePreviews = {};
+    
+    for (const fileName of txtFiles.slice(0, 10)) { // Limit to 10 files
+      try {
+        const filePath = path.join(SCHEDULE_DIR, fileName);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
+        const headers = lines[0] ? lines[0].split(',') : [];
+        
+        filePreviews[fileName] = {
+          lines: lines.length,
+          headers: headers,
+          first_data_row: lines[1] ? lines[1].split(',') : [],
+          sample: lines.slice(0, 3).map(line => line.split(','))
+        };
+      } catch (err) {
+        filePreviews[fileName] = { error: err.message };
+      }
+    }
+    
+    // Check for specific critical files
+    const criticalFiles = ['stops.txt', 'trips.txt', 'stop_times.txt', 'shapes.txt', 'routes.txt'];
+    const criticalStatus = {};
+    
+    for (const criticalFile of criticalFiles) {
+      const filePath = path.join(SCHEDULE_DIR, criticalFile);
+      try {
+        await fs.access(filePath);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
+        criticalStatus[criticalFile] = {
+          exists: true,
+          lines: lines.length,
+          has_data: lines.length > 1
+        };
+      } catch {
+        criticalStatus[criticalFile] = { exists: false };
+      }
+    }
+    
+    res.json({
+      schedule_dir: SCHEDULE_DIR,
+      files_found: txtFiles,
+      total_files: txtFiles.length,
+      critical_files_status: criticalStatus,
+      file_previews: filePreviews,
+      usage_note: 'Use ?file=stops.txt to see specific file contents'
+    });
+    
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack,
+      schedule_dir_exists: await fs.access(path.join(process.cwd(), 'schedules')).then(() => true).catch(() => false)
+    });
+  }
+});
+
+app.get('/api/debug/csv-structure', async (req, res) => {
+  try {
+    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    const criticalFiles = ['stops.txt', 'trips.txt', 'stop_times.txt', 'shapes.txt', 'routes.txt'];
+    
+    const analysis = {};
+    
+    for (const file of criticalFiles) {
+      const filePath = path.join(SCHEDULE_DIR, file);
+      try {
+        await fs.access(filePath);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n').filter(line => line.trim());
+        
+        if (lines.length === 0) {
+          analysis[file] = { exists: true, empty: true };
+          continue;
+        }
+        
+        const headers = lines[0].split(',');
+        const sampleRows = lines.slice(1, 6).map(line => {
+          const values = line.split(',');
+          const row = {};
+          headers.forEach((header, i) => {
+            row[header.trim()] = values[i] ? values[i].trim() : '';
+          });
+          return row;
+        });
+        
+        analysis[file] = {
+          exists: true,
+          lines: lines.length,
+          data_rows: lines.length - 1,
+          headers: headers,
+          header_count: headers.length,
+          sample_rows: sampleRows,
+          field_types: headers.map(header => {
+            const sampleValues = sampleRows.map(row => row[header]);
+            return {
+              field: header,
+              sample_values: sampleValues,
+              likely_type: determineFieldType(sampleValues)
+            };
+          })
+        };
+        
+      } catch (err) {
+        analysis[file] = { exists: false, error: err.message };
+      }
+    }
+    
+    // Check for data consistency
+    const stopsFile = analysis['stops.txt'];
+    const tripsFile = analysis['trips.txt'];
+    const stopTimesFile = analysis['stop_times.txt'];
+    
+    const consistency = {};
+    
+    if (stopsFile.exists && tripsFile.exists && stopTimesFile.exists) {
+      const stopIds = new Set();
+      const tripIds = new Set();
+      const routeIds = new Set();
+      
+      // Extract IDs from sample data
+      if (stopsFile.sample_rows) {
+        stopsFile.sample_rows.forEach(row => {
+          if (row.stop_id) stopIds.add(row.stop_id);
+        });
+      }
+      
+      if (tripsFile.sample_rows) {
+        tripsFile.sample_rows.forEach(row => {
+          if (row.trip_id) tripIds.add(row.trip_id);
+          if (row.route_id) routeIds.add(row.route_id);
+        });
+      }
+      
+      consistency.stops = {
+        unique_ids_in_sample: stopIds.size,
+        sample_ids: Array.from(stopIds).slice(0, 5)
+      };
+      
+      consistency.trips = {
+        unique_ids_in_sample: tripIds.size,
+        unique_routes_in_sample: routeIds.size,
+        sample_trip_ids: Array.from(tripIds).slice(0, 5)
+      };
+    }
+    
+    res.json({
+      analysis,
+      consistency,
+      summary: {
+        all_critical_files_exist: criticalFiles.every(f => analysis[f]?.exists),
+        total_records: Object.values(analysis).reduce((sum, file) => 
+          sum + (file.data_rows || 0), 0
+        )
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+function determineFieldType(values) {
+  if (values.length === 0) return 'unknown';
+  
+  const sample = values.filter(v => v !== '');
+  if (sample.length === 0) return 'empty';
+  
+  // Check for numeric
+  if (sample.every(v => !isNaN(v) && v.trim() !== '')) {
+    // Check if all are integers
+    if (sample.every(v => Number.isInteger(parseFloat(v)))) {
+      return 'integer';
+    }
+    return 'float';
+  }
+  
+  // Check for coordinates
+  if (sample.every(v => {
+    const num = parseFloat(v);
+    return !isNaN(num) && num >= -180 && num <= 180;
+  })) {
+    return 'coordinate';
+  }
+  
+  // Check for time (HH:MM:SS format)
+  const timeRegex = /^\d{1,2}:\d{2}:\d{2}$/;
+  if (sample.every(v => timeRegex.test(v))) {
+    return 'time';
+  }
+  
+  // Check for IDs (often numeric or alphanumeric)
+  const idRegex = /^[A-Za-z0-9:_\-]+$/;
+  if (sample.every(v => idRegex.test(v))) {
+    return 'id';
+  }
+  
+  return 'text';
+}
+
+app.get('/api/debug/csv-validate', async (req, res) => {
+  try {
+    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    const files = ['stops.txt', 'trips.txt', 'stop_times.txt', 'shapes.txt'];
+    
+    const validationResults = {};
+    const issues = [];
+    
+    for (const file of files) {
+      const filePath = path.join(SCHEDULE_DIR, file);
+      try {
+        await fs.access(filePath);
+        const content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n').filter(line => line.trim());
+        
+        if (lines.length === 0) {
+          validationResults[file] = { valid: false, error: 'File is empty' };
+          issues.push(`${file}: Empty file`);
+          continue;
+        }
+        
+        const headers = lines[0].split(',');
+        const dataLines = lines.slice(1);
+        
+        // Check for consistent column count
+        const inconsistentRows = [];
+        dataLines.forEach((line, index) => {
+          const columns = line.split(',');
+          if (columns.length !== headers.length) {
+            inconsistentRows.push({
+              line: index + 2, // +2 for header line and 1-based index
+              expected: headers.length,
+              actual: columns.length,
+              content: line.substring(0, 100)
+            });
+          }
+        });
+        
+        // Check for required fields based on file type
+        const requiredFields = {
+          'stops.txt': ['stop_id', 'stop_name', 'stop_lat', 'stop_lon'],
+          'trips.txt': ['trip_id', 'route_id', 'service_id'],
+          'stop_times.txt': ['trip_id', 'stop_id', 'stop_sequence'],
+          'shapes.txt': ['shape_id', 'shape_pt_lat', 'shape_pt_lon', 'shape_pt_sequence']
+        };
+        
+        const missingFields = [];
+        if (requiredFields[file]) {
+          requiredFields[file].forEach(field => {
+            if (!headers.includes(field)) {
+              missingFields.push(field);
+            }
+          });
+        }
+        
+        validationResults[file] = {
+          valid: inconsistentRows.length === 0 && missingFields.length === 0,
+          stats: {
+            total_lines: lines.length,
+            data_rows: dataLines.length,
+            header_count: headers.length,
+            inconsistent_rows: inconsistentRows.length,
+            missing_required_fields: missingFields.length
+          },
+          headers: headers,
+          issues: {
+            inconsistent_rows: inconsistentRows.slice(0, 5),
+            missing_fields: missingFields
+          }
+        };
+        
+        if (inconsistentRows.length > 0) {
+          issues.push(`${file}: ${inconsistentRows.length} rows with inconsistent column count`);
+        }
+        if (missingFields.length > 0) {
+          issues.push(`${file}: Missing required fields: ${missingFields.join(', ')}`);
+        }
+        
+      } catch (err) {
+        validationResults[file] = { valid: false, error: err.message };
+        issues.push(`${file}: ${err.message}`);
+      }
+    }
+    
+    // Check referential integrity
+    const integrityIssues = await checkReferentialIntegrity(SCHEDULE_DIR);
+    issues.push(...integrityIssues);
+    
+    res.json({
+      validation_time: new Date().toISOString(),
+      overall_valid: issues.length === 0,
+      total_issues: issues.length,
+      validation_results: validationResults,
+      issues: issues,
+      recommendations: issues.length === 0 ? 
+        ['All CSV files are valid'] : 
+        ['Fix the issues listed above']
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function checkReferentialIntegrity(scheduleDir) {
+  const issues = [];
+  
+  try {
+    // Read stops
+    const stopsPath = path.join(scheduleDir, 'stops.txt');
+    const stopsContent = await fs.readFile(stopsPath, 'utf-8');
+    const stopsLines = stopsContent.split('\n').filter(line => line.trim());
+    const stopIds = new Set();
+    
+    if (stopsLines.length > 1) {
+      const headers = stopsLines[0].split(',');
+      const stopIdIndex = headers.indexOf('stop_id');
+      if (stopIdIndex !== -1) {
+        stopsLines.slice(1).forEach(line => {
+          const values = line.split(',');
+          if (values[stopIdIndex]) {
+            stopIds.add(values[stopIdIndex].trim());
+          }
+        });
+      }
+    }
+    
+    // Read trips
+    const tripsPath = path.join(scheduleDir, 'trips.txt');
+    const tripsContent = await fs.readFile(tripsPath, 'utf-8');
+    const tripsLines = tripsContent.split('\n').filter(line => line.trim());
+    const tripIds = new Set();
+    
+    if (tripsLines.length > 1) {
+      const headers = tripsLines[0].split(',');
+      const tripIdIndex = headers.indexOf('trip_id');
+      if (tripIdIndex !== -1) {
+        tripsLines.slice(1).forEach(line => {
+          const values = line.split(',');
+          if (values[tripIdIndex]) {
+            tripIds.add(values[tripIdIndex].trim());
+          }
+        });
+      }
+    }
+    
+    // Read stop_times and check references
+    const stopTimesPath = path.join(scheduleDir, 'stop_times.txt');
+    const stopTimesContent = await fs.readFile(stopTimesPath, 'utf-8');
+    const stopTimesLines = stopTimesContent.split('\n').filter(line => line.trim());
+    
+    if (stopTimesLines.length > 1) {
+      const headers = stopTimesLines[0].split(',');
+      const tripIdIndex = headers.indexOf('trip_id');
+      const stopIdIndex = headers.indexOf('stop_id');
+      
+      const missingTripRefs = new Set();
+      const missingStopRefs = new Set();
+      
+      stopTimesLines.slice(1, 100).forEach((line, index) => { // Check first 100 rows
+        const values = line.split(',');
+        const tripId = tripIdIndex !== -1 ? values[tripIdIndex]?.trim() : null;
+        const stopId = stopIdIndex !== -1 ? values[stopIdIndex]?.trim() : null;
+        
+        if (tripId && !tripIds.has(tripId)) {
+          missingTripRefs.add(tripId);
+        }
+        
+        if (stopId && !stopIds.has(stopId)) {
+          missingStopRefs.add(stopId);
+        }
+      });
+      
+      if (missingTripRefs.size > 0) {
+        issues.push(`stop_times.txt: ${missingTripRefs.size} trip_id references not found in trips.txt`);
+      }
+      if (missingStopRefs.size > 0) {
+        issues.push(`stop_times.txt: ${missingStopRefs.size} stop_id references not found in stops.txt`);
+      }
+    }
+    
+  } catch (err) {
+    issues.push(`Referential integrity check failed: ${err.message}`);
+  }
+  
+  return issues;
+}
+
+app.get('/api/debug/csv-export', async (req, res) => {
+  try {
+    const { file, format } = req.query;
+    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    
+    if (!file) {
+      return res.status(400).json({
+        error: 'File parameter required',
+        example: '/api/debug/csv-export?file=stops.txt&format=json'
+      });
+    }
+    
+    const filePath = path.join(SCHEDULE_DIR, file);
+    await fs.access(filePath);
+    
+    const content = await fs.readFile(filePath, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+    
+    if (lines.length === 0) {
+      return res.json({ file, empty: true });
+    }
+    
+    const headers = lines[0].split(',');
+    const data = lines.slice(1).map((line, index) => {
+      const values = line.split(',');
+      const row = { _row: index + 1 };
+      headers.forEach((header, i) => {
+        row[header.trim()] = values[i] ? values[i].trim() : '';
+      });
+      return row;
+    }).filter(row => Object.values(row).some(val => val !== ''));
+    
+    if (format === 'csv') {
+      // Return as CSV download
+      res.header('Content-Type', 'text/csv');
+      res.header('Content-Disposition', `attachment; filename="${file}"`);
+      return res.send(content);
+    } else if (format === 'raw') {
+      // Return raw content
+      res.header('Content-Type', 'text/plain');
+      return res.send(content);
+    } else {
+      // Return as JSON (default)
+      return res.json({
+        file,
+        headers,
+        row_count: data.length,
+        data: data.slice(0, 1000), // Limit to 1000 rows
+        truncated: data.length > 1000 ? data.length - 1000 : 0
+      });
+    }
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.get('/api/shapes', async (req, res) => {
   try {
     if (!scheduleLoader.scheduleData?.tripsMap) {
