@@ -8,34 +8,7 @@ import ScheduleLoader from './schedule-loader.js';
 
 const scheduleLoader = new ScheduleLoader();
 
-const app = express();
-// Improved CORS for Vercel + cross-origin from revyhub.com
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowedOrigins = [
-    'https://revyhub.com',
-    'https://www.revyhub.com',
-    'http://localhost:3000', // for local dev
-    origin // allow any for testing (tighten later)
-  ];
-
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*'); // fallback
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-  // Handle preflight OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-
-  next();
-});
+app.use(cors());
 
 // URL of the GTFS-Realtime protobuf schema
 const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/gtfs-realtime/proto/gtfs-realtime.proto';
