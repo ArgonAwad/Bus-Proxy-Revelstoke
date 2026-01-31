@@ -1,4 +1,3 @@
-// server/schedule-loader.js
 import fs from 'fs/promises';
 import path from 'path';
 import fetch from 'node-fetch';
@@ -27,15 +26,16 @@ class ScheduleLoader {
     try {
       console.log(`[${new Date().toISOString()}] Fetching fresh GTFS from BC Transit for operator 36...`);
       const response = await fetch(GTFS_URL, { timeout: 30000 });
-
       if (!response.ok) {
         throw new Error(`GTFS fetch failed: ${response.status} ${response.statusText}`);
       }
 
       const zipBuffer = await response.arrayBuffer();
-      const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(unzipper.Parse({ forceStream: true }));
+      console.log(`ZIP downloaded, size: ${(zipBuffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
 
+      const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(unzipper.Parse({ forceStream: true }));
       const files = {};
+
       for await (const entry of zipStream) {
         const fileName = entry.path;
         if (entry.type === 'File' && fileName.endsWith('.txt')) {
@@ -44,7 +44,7 @@ class ScheduleLoader {
             content += chunk.toString('utf8');
           }
           files[fileName] = content;
-          console.log(`  Extracted: ${fileName} (${content.length} chars)`);
+          console.log(` Extracted: ${fileName} (${content.length} chars)`);
         } else {
           entry.autodrain();
         }
@@ -63,6 +63,8 @@ class ScheduleLoader {
       const stopTimes = this.parseCSV(files['stop_times.txt']);
       const shapes = this.parseCSV(files['shapes.txt']);
 
+      console.log(`Parsed: ${routes.length} routes | ${trips.length} trips | ${stops.length} stops | ${stopTimes.length} stop_times | ${shapes.length} shapes`);
+
       this.scheduleData.routesMap = this.createRoutesMap(routes);
       this.scheduleData.tripsMap = this.createTripsMap(trips);
       this.scheduleData.stops = this.createStopsMap(stops);
@@ -70,6 +72,9 @@ class ScheduleLoader {
       this.scheduleData.shapes = this.createShapesMap(shapes);
 
       console.log(`[${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
+      console.log(`Stops loaded: ${Object.keys(this.scheduleData.stops).length}`);
+      console.log(`Sample stop 156087:`, this.scheduleData.stops['156087'] || 'NOT FOUND');
+
       return this.scheduleData;
     } catch (error) {
       console.error(`[${new Date().toISOString()}] Failed to load dynamic GTFS:`, error.message);
@@ -95,6 +100,8 @@ class ScheduleLoader {
       this.scheduleData.shapes = this.createShapesMap(files.shapes);
 
       console.log(`[${new Date().toISOString()}] Loaded schedule data from local fallback files`);
+      console.log(`Stops loaded (local): ${Object.keys(this.scheduleData.stops).length}`);
+
       return this.scheduleData;
     } catch (localError) {
       console.error('Local fallback failed:', localError.message);
@@ -105,32 +112,73 @@ class ScheduleLoader {
   async readLocalCSV(filename) {
     const filePath = path.join(SCHEDULE_DIR, filename);
     const content = await fs.readFile(filePath, 'utf-8');
-    console.log(`  Read local file: ${filename} (${content.length} chars)`);
+    console.log(` Read local file: ${filename} (${content.length} chars)`);
     return this.parseCSV(content);
   }
 
+  // Improved CSV parser that handles quoted fields properly
   parseCSV(csvString) {
     if (!csvString.trim()) return [];
-    const lines = csvString.trim().split('\n');
+    const lines = csvString.split(/\r?\n/);
     if (lines.length < 1) return [];
-    const headers = lines[0].split(',').map(h => h.trim());
+
+    const headers = this.parseCSVLine(lines[0]);
+    console.log(`CSV headers (${headers.length}):`, headers.join(', '));
+
     const result = [];
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
-      const values = line.split(',');
-      if (values.length !== headers.length) continue;
+
+      const values = this.parseCSVLine(line);
+      if (values.length !== headers.length) {
+        console.warn(`Line ${i+1} skipped: expected ${headers.length} fields, got ${values.length}`);
+        continue;
+      }
+
       const obj = {};
       headers.forEach((header, idx) => {
         obj[header] = values[idx].trim();
       });
       result.push(obj);
     }
+
+    console.log(`Parsed ${result.length} rows from CSV`);
+    return result;
+  }
+
+  // Helper to parse a single CSV line with quoted fields
+  parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+
+      if (char === '"' && !inQuotes) {
+        inQuotes = true;
+      } else if (char === '"' && inQuotes) {
+        if (i + 1 < line.length && line[i + 1] === '"') {
+          current += '"';
+          i++; // skip the next quote
+        } else {
+          inQuotes = false;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    if (current) result.push(current);
     return result;
   }
 
   // ────────────────────────────────────────────────
-  // Your real map-building methods (reconstructed from your diff + standard GTFS)
+  // Map-building methods
   // ────────────────────────────────────────────────
 
   createRoutesMap(routesArray) {
@@ -150,24 +198,33 @@ class ScheduleLoader {
   }
 
   createStopsMap(stopsArray) {
-  const map = {};
-  let validCount = 0;
-  stopsArray.forEach(stop => {
-    const id = String(stop.stop_id).trim(); // force string, remove whitespace
-    const lat = parseFloat(stop.stop_lat);
-    const lon = parseFloat(stop.stop_lon);
-    if (!isNaN(lat) && !isNaN(lon)) {
-      map[id] = { lat, lon, name: stop.stop_name || '' };
-      validCount++;
-    } else {
-      console.warn(`Invalid lat/lon for stop ${id}: lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
-    }
-  });
-  console.log(`Stops map created: ${Object.keys(map).length} entries (${validCount} valid coords)`);
-  console.log(`Sample stop keys: ${Object.keys(map).slice(0, 5).join(', ')}`);
-  console.log(`Does 156095 exist? ${!!map['156095']}`);
-  return map;
-}
+    const map = {};
+    let validCount = 0;
+
+    stopsArray.forEach(stop => {
+      const id = String(stop.stop_id).trim();
+      const lat = parseFloat(stop.stop_lat);
+      const lon = parseFloat(stop.stop_lon);
+
+      if (!isNaN(lat) && !isNaN(lon) && id) {
+        map[id] = {
+          lat,
+          lon,
+          name: stop.stop_name?.trim() || 'Unnamed Stop'
+        };
+        validCount++;
+      } else {
+        console.warn(`Invalid stop skipped: id=${stop.stop_id}, lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
+      }
+    });
+
+    console.log(`[Stops] Loaded ${validCount} valid stops out of ${stopsArray.length} rows`);
+    console.log(`[Stops] Sample keys (first 5): ${Object.keys(map).slice(0,5).join(', ')}`);
+    console.log(`[Stops] Has 156087? ${!!map['156087']}`);
+    console.log(`[Stops] Has 156083? ${!!map['156083']}`);
+
+    return map;
+  }
 
   createStopTimesByTrip(stopTimesArray) {
     const byTrip = {};
@@ -181,9 +238,9 @@ class ScheduleLoader {
         stop_id: st.stop_id,
         stop_sequence: parseInt(st.stop_sequence, 10),
         shape_dist_traveled: st.shape_dist_traveled ? parseFloat(st.shape_dist_traveled) : null,
-        // add other fields as needed
       });
     });
+    console.log(`[StopTimes] Indexed ${Object.keys(byTrip).length} trips`);
     return byTrip;
   }
 
@@ -199,9 +256,12 @@ class ScheduleLoader {
         dist: pt.shape_dist_traveled ? parseFloat(pt.shape_dist_traveled) : null
       });
     });
+
     Object.values(shapes).forEach(points => {
       points.sort((a, b) => a.sequence - b.sequence);
     });
+
+    console.log(`[Shapes] Loaded ${Object.keys(shapes).length} shape IDs`);
     return shapes;
   }
 }
