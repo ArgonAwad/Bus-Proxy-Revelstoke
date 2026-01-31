@@ -19,78 +19,95 @@ class ScheduleLoader {
   }
 
   /**
-   * Main method to load schedule data
-   * Tries API first → falls back to local files if anything fails
-   */
-  async loadSchedules() {
+ * Main method to load schedule data
+ * Tries API first → falls back to local files if anything fails
+ */
+async loadSchedules() {
   try {
-    console.log(`[${new Date().toISOString()}] Fetching fresh GTFS from BC Transit for operator 36...`);
+    console.log(`[${new Date().toISOString()}] 🚀 Fetching fresh GTFS from BC Transit for operator 36...`);
     const response = await fetch(GTFS_URL, { timeout: 30000 });
+    
     if (!response.ok) {
       throw new Error(`GTFS fetch failed: ${response.status} ${response.statusText}`);
     }
 
     const zipBuffer = await response.arrayBuffer();
-    console.log(`ZIP downloaded, size: ${(zipBuffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`📦 ZIP downloaded, size: ${(zipBuffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
 
-    // Instead of streaming, let's use a simpler approach
-    // We'll write to a temp file and read it
-    const tempDir = path.join(process.cwd(), 'temp_gtfs');
-    await fs.mkdir(tempDir, { recursive: true });
+    // Use unzipper to extract files
+    const directory = await unzipper.Open.buffer(Buffer.from(zipBuffer));
+    console.log(`📁 ZIP contains ${directory.files.length} files`);
     
-    const zipPath = path.join(tempDir, 'gtfs.zip');
-    await fs.writeFile(zipPath, Buffer.from(zipBuffer));
-    
-    console.log('Extracting ZIP...');
-    const directory = await unzipper.Open.file(zipPath);
-    
+    const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
     const files = {};
-    const fileNames = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
     
-    for (const fileName of fileNames) {
+    // Extract required files
+    for (const fileName of requiredFiles) {
       const fileEntry = directory.files.find(f => f.path === fileName);
-      if (fileEntry) {
+      if (!fileEntry) {
+        console.warn(`⚠️ File not found in ZIP: ${fileName}`);
+        files[fileName] = '';
+        continue;
+      }
+      
+      try {
         const content = await fileEntry.buffer();
         const text = content.toString('utf8');
         files[fileName] = text;
-        console.log(`Extracted ${fileName}: ${text.length} chars`);
+        console.log(`✅ Extracted ${fileName}: ${text.length} chars`);
         
-        // Log first few lines
-        const lines = text.split('\n');
-        console.log(`First 3 lines of ${fileName}:`);
-        lines.slice(0, 3).forEach((line, i) => console.log(`  ${i+1}: ${line}`));
-      } else {
-        console.warn(`File not found in ZIP: ${fileName}`);
+        // Log first line for verification
+        const firstLine = text.split('\n')[0];
+        console.log(`   First line: ${firstLine?.substring(0, 80)}${firstLine?.length > 80 ? '...' : ''}`);
+        
+      } catch (fileError) {
+        console.error(`❌ Failed to extract ${fileName}:`, fileError.message);
+        files[fileName] = '';
       }
     }
-    
-    // Clean up
-    await fs.rm(tempDir, { recursive: true, force: true });
-    
-    // Parse the files
-    const routes = this.parseCSV(files['routes.txt'] || '');
-    const trips = this.parseCSV(files['trips.txt'] || '');
-    const stops = this.parseCSV(files['stops.txt'] || '');
-    const stopTimes = this.parseCSV(files['stop_times.txt'] || '');
-    const shapes = this.parseCSV(files['shapes.txt'] || '');
-    
-    console.log(`Parsed counts: ${routes.length} routes, ${trips.length} trips, ${stops.length} stops, ${stopTimes.length} stop_times, ${shapes.length} shapes`);
-    
-    // Build maps
+
+    // Parse each file
+    console.log('\n📊 Parsing GTFS files:');
+    const routes = this.parseCSV(files['routes.txt']);
+    const trips = this.parseCSV(files['trips.txt']);
+    const stops = this.parseCSV(files['stops.txt']);
+    const stopTimes = this.parseCSV(files['stop_times.txt']);
+    const shapes = this.parseCSV(files['shapes.txt']);
+
+    console.log(`\n📈 Parsed counts:`);
+    console.log(`   Routes: ${routes.length}`);
+    console.log(`   Trips: ${trips.length}`);
+    console.log(`   Stops: ${stops.length}`);
+    console.log(`   Stop Times: ${stopTimes.length}`);
+    console.log(`   Shapes: ${shapes.length}`);
+
+    // Build data structures
     this.scheduleData.routesMap = this.createRoutesMap(routes);
     this.scheduleData.tripsMap = this.createTripsMap(trips);
     this.scheduleData.stops = this.createStopsMap(stops);
     this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
     this.scheduleData.shapes = this.createShapesMap(shapes);
+
+    console.log(`\n🎉 [${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
+    console.log(`   Stops loaded: ${Object.keys(this.scheduleData.stops).length}`);
+    console.log(`   Trips loaded: ${Object.keys(this.scheduleData.tripsMap).length}`);
+    console.log(`   Shapes loaded: ${Object.keys(this.scheduleData.shapes).length}`);
     
-    console.log(`[${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
-    
+    // Verify specific stops from your example
+    console.log(`\n🔍 Verifying key stops:`);
+    const keyStops = ['156087', '156011', '156083'];
+    keyStops.forEach(stopId => {
+      const stop = this.scheduleData.stops[stopId];
+      console.log(`   ${stopId}: ${stop ? `✓ "${stop.name}" at ${stop.lat},${stop.lon}` : '✗ NOT FOUND'}`);
+    });
+
     return this.scheduleData;
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Failed to load dynamic GTFS:`, error.message);
-    console.error('Error stack:', error.stack);
     
-    console.log('Falling back to local static GTFS files...');
+  } catch (error) {
+    console.error(`\n❌ [${new Date().toISOString()}] Failed to load dynamic GTFS:`, error.message);
+    console.error('Stack trace:', error.stack);
+    
+    console.log('\n🔄 Falling back to local static GTFS files...');
     return await this.loadFromLocal();
   }
 }
@@ -141,83 +158,60 @@ class ScheduleLoader {
   }
 }
   // Improved CSV parser that handles quoted fields properly
-  parseCSV(csvString) {
-    if (!csvString.trim()) return [];
-    const lines = csvString.split(/\r?\n/);
-    if (lines.length < 1) return [];
-
-    const headers = this.parseCSVLine(lines[0]);
-    console.log(`CSV headers (${headers.length}):`, headers.join(', '));
-
-    const result = [];
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-
-      const values = this.parseCSVLine(line);
-      if (values.length !== headers.length) {
-        console.warn(`Line ${i+1} skipped: expected ${headers.length} fields, got ${values.length}`);
-        continue;
-      }
-
-      const obj = {};
-      headers.forEach((header, idx) => {
-        obj[header] = values[idx].trim();
-      });
-      result.push(obj);
-    }
-
-    console.log(`Parsed ${result.length} rows from CSV`);
-    return result;
-  }
-
-  // Helper to parse a single CSV line with quoted fields
-  parseCSV(csvString) {
-  if (!csvString || !csvString.trim()) {
-    console.warn('parseCSV: Empty CSV string provided');
+  // Improved CSV parser that handles your file format
+parseCSV(csvString) {
+  if (!csvString || csvString.trim().length === 0) {
+    console.warn('⚠️ parseCSV: Empty CSV string');
     return [];
   }
   
   const lines = csvString.split(/\r?\n/).filter(line => line.trim() !== '');
-  console.log(`parseCSV: Found ${lines.length} lines (including header)`);
+  console.log(`📄 parseCSV: Found ${lines.length} lines`);
   
   if (lines.length < 2) {
-    console.warn('parseCSV: Not enough lines for data');
+    console.warn('⚠️ parseCSV: Not enough lines (need at least header + 1 data row)');
     return [];
   }
 
-  // Parse headers (first line)
+  // Parse headers from first line
   const headers = lines[0].split(',').map(h => h.trim());
-  console.log(`parseCSV: Headers (${headers.length}):`, headers);
+  console.log(`📋 Headers (${headers.length}): ${headers.join(', ')}`);
 
   const result = [];
-  let errorCount = 0;
+  let skippedRows = 0;
   
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (!line) continue;
-    
-    // Simple split - your samples don't show quoted fields
+    if (!line) {
+      skippedRows++;
+      continue;
+    }
+
+    // Simple split - your files don't have quoted commas
     const values = line.split(',').map(v => v.trim());
     
     if (values.length !== headers.length) {
-      console.warn(`parseCSV: Line ${i} mismatch. Expected ${headers.length} cols, got ${values.length}: "${line.substring(0, 50)}..."`);
-      errorCount++;
-      // Try to continue anyway, using available values
+      console.warn(`⚠️ Line ${i}: Column mismatch. Expected ${headers.length}, got ${values.length}`);
+      console.warn(`   Line: "${line.substring(0, 100)}..."`);
+      skippedRows++;
+      continue;
     }
-    
+
     const obj = {};
-    headers.forEach((header, idx) => {
-      obj[header] = values[idx] || '';
-    });
+    for (let j = 0; j < headers.length; j++) {
+      obj[headers[j]] = values[j] || '';
+    }
     
     result.push(obj);
   }
   
-  console.log(`parseCSV: Successfully parsed ${result.length} rows, ${errorCount} errors`);
+  console.log(`✅ parseCSV: Parsed ${result.length} rows, skipped ${skippedRows}`);
   
   if (result.length > 0) {
-    console.log('parseCSV: Sample first row:', JSON.stringify(result[0], null, 2));
+    console.log('📝 First row sample:');
+    Object.entries(result[0]).forEach(([key, value]) => {
+      console.log(`   ${key}: ${value}`);
+    });
   }
   
   return result;
