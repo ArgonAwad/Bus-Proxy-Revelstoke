@@ -274,9 +274,10 @@ app.get('/api/buses', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const noVirtuals = 'no_virtuals' in req.query;
+    const allVirtuals = req.query.all_virtuals === 'true';  // NEW
     const startTime = Date.now();
 
-    console.log(`[${new Date().toISOString()}] /api/buses called for operator ${operatorId} | no_virtuals=${noVirtuals}`);
+    console.log(`[${new Date().toISOString()}] /api/buses called for operator ${operatorId} | no_virtuals=${noVirtuals} | all_virtuals=${allVirtuals}`);
 
     const [vehicleResult, tripResult, alertsResult] = await Promise.all([
       fetchGTFSFeed('vehicleupdates.pb', operatorId),
@@ -284,7 +285,12 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
 
-    const enhancedVehicleResult = await getEnhancedVehiclePositions(operatorId, !noVirtuals, 'subs');
+    const enhancedVehicleResult = await getEnhancedVehiclePositions(
+      operatorId,
+      !noVirtuals,
+      'subs',
+      allVirtuals   // NEW: passed here
+    );
 
     let enhancedTripResult = tripResult;
     if (tripResult.success && tripResult.data?.entity) {
@@ -309,6 +315,7 @@ app.get('/api/buses', async (req, res) => {
         fetchedAt: new Date().toISOString(),
         responseTimeMs: responseTime,
         no_virtuals: noVirtuals,
+        all_virtuals_mode: allVirtuals,          // NEW: visible in response
         feeds: {
           vehicle_positions: {
             success: enhancedVehicleResult.success,
