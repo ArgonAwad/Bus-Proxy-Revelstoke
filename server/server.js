@@ -543,6 +543,315 @@ app.get('/api/trip_updates', async (req, res) => {
 import fs from 'fs/promises';
 import path from 'path';
 
+app.get('/api/debug/schedule-trace', async (req, res) => {
+  try {
+    console.log('🔍 Starting schedule trace...');
+    
+    // Check current state
+    const currentState = {
+      scheduleData: scheduleLoader.scheduleData,
+      hasTripsMap: !!scheduleLoader.scheduleData?.tripsMap,
+      tripsMapKeys: scheduleLoader.scheduleData?.tripsMap ? Object.keys(scheduleLoader.scheduleData.tripsMap) : [],
+      tripsMapCount: scheduleLoader.scheduleData?.tripsMap ? Object.keys(scheduleLoader.scheduleData.tripsMap).length : 0,
+      hasStops: !!scheduleLoader.scheduleData?.stops,
+      stopsCount: scheduleLoader.scheduleData?.stops ? Object.keys(scheduleLoader.scheduleData.stops).length : 0
+    };
+    
+    console.log('Current state:', currentState);
+    
+    // Try to load schedules fresh
+    console.log('Attempting to load schedules...');
+    const loadedData = await scheduleLoader.loadSchedules();
+    
+    const afterLoadState = {
+      scheduleData: scheduleLoader.scheduleData,
+      loadedDataReturned: !!loadedData,
+      hasTripsMap: !!scheduleLoader.scheduleData?.tripsMap,
+      tripsMapCount: scheduleLoader.scheduleData?.tripsMap ? Object.keys(scheduleLoader.scheduleData.tripsMap).length : 0,
+      hasStops: !!scheduleLoader.scheduleData?.stops,
+      stopsCount: scheduleLoader.scheduleData?.stops ? Object.keys(scheduleLoader.scheduleData.stops).length : 0
+    };
+    
+    console.log('After load state:', afterLoadState);
+    
+    // If still empty, check the ScheduleLoader implementation
+    let loaderImplementation = 'Unknown';
+    try {
+      // Try to get some info about the loader
+      loaderImplementation = {
+        prototypeMethods: Object.getOwnPropertyNames(Object.getPrototypeOf(scheduleLoader)),
+        ownProperties: Object.getOwnPropertyNames(scheduleLoader)
+      };
+    } catch (e) {
+      loaderImplementation = `Error inspecting: ${e.message}`;
+    }
+    
+    res.json({
+      trace: {
+        before_load: currentState,
+        after_load: afterLoadState,
+        loader_inspection: loaderImplementation
+      },
+      analysis: afterLoadState.tripsMapCount === 0 ? 
+        '⚠️ Schedule data loaded but empty. Check ScheduleLoader implementation.' :
+        '✅ Schedule data loaded successfully',
+      recommendations: [
+        'Check /api/debug/schedule-loader-source to see source URL',
+        'Check ScheduleLoader.js file for fetch/parse logic',
+        'Try /api/debug/test-gtfs-fetch to test direct GTFS fetch'
+      ]
+    });
+    
+  } catch (error) {
+    console.error('Schedule trace error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+app.get('/api/debug/schedule-loader-source', async (req, res) => {
+  try {
+    // Try to determine where ScheduleLoader gets data
+    const gtfsUrl = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=36';
+    
+    // Test if the URL is accessible
+    let urlTest = { accessible: false };
+    try {
+      const testResponse = await fetch(gtfsUrl, { method: 'HEAD' });
+      urlTest = {
+        accessible: true,
+        status: testResponse.status,
+        statusText: testResponse.statusText,
+        contentType: testResponse.headers.get('content-type')
+      };
+    } catch (err) {
+      urlTest.error = err.message;
+    }
+    
+    // Check if scheduleLoader has any configuration
+    const loaderConfig = {
+      hasOperatorId: scheduleLoader.operatorId !== undefined,
+      operatorId: scheduleLoader.operatorId,
+      hasBaseUrl: scheduleLoader.baseUrl !== undefined,
+      baseUrl: scheduleLoader.baseUrl
+    };
+    
+    res.json({
+      likely_sources: [
+        gtfsUrl,
+        'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/',
+        'http://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/'
+      ],
+      url_test: urlTest,
+      loader_configuration: loaderConfig,
+      environment: {
+        node_env: process.env.NODE_ENV,
+        vercel: !!process.env.VERCEL
+      },
+      next_steps: [
+        'Check ScheduleLoader.js constructor for URL configuration',
+        'Look for fetch() calls in ScheduleLoader.loadSchedules()',
+        'Check if data is being cached or stored somewhere else'
+      ]
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/debug/test-gtfs-fetch', async (req, res) => {
+  try {
+    const { operatorId = '36' } = req.query;
+    const url = `https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=${operatorId}`;
+    
+    console.log(`Testing GTFS fetch from: ${url}`);
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `HTTP ${response.status}: ${response.statusText}`,
+        url
+      });
+    }
+    
+    const contentType = response.headers.get('content-type');
+    const contentLength = response.headers.get('content-length');
+    const isZip = contentType.includes('zip') || contentType.includes('octet-stream');
+    
+    // Get first few bytes to verify content
+    const buffer = await response.arrayBuffer();
+    const firstBytes = Buffer.from(buffer.slice(0, 100)).toString('hex');
+    
+    res.json({
+      success: true,
+      url,
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        contentLength,
+        isZipFile: isZip,
+        firstBytesHex: firstBytes,
+        likelyFormat: isZip ? 'ZIP archive' : 'Unknown'
+      },
+      next_steps: [
+        'If this works, ScheduleLoader should fetch from this URL',
+        'Check if ScheduleLoader properly parses the ZIP data',
+        'Verify that CSV files are being extracted correctly'
+      ]
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      url: req.query.url,
+      note: 'This might be a CORS or network issue on Vercel'
+    });
+  }
+});
+
+app.get('/api/debug/schedule-data-dump', async (req, res) => {
+  try {
+    // Force reload
+    await scheduleLoader.loadSchedules();
+    const data = scheduleLoader.scheduleData;
+    
+    if (!data) {
+      return res.json({ error: 'No schedule data after load' });
+    }
+    
+    // Create a safe dump (limit size)
+    const dump = {
+      metadata: {
+        source: data.source || 'unknown',
+        timestamp: data.timestamp || new Date().toISOString(),
+        hasRoutesMap: !!data.routesMap,
+        hasTripsMap: !!data.tripsMap,
+        hasStops: !!data.stops,
+        hasShapes: !!data.shapes,
+        hasStopTimesByTrip: !!data.stopTimesByTrip
+      },
+      counts: {
+        routes: data.routesMap ? Object.keys(data.routesMap).length : 0,
+        trips: data.tripsMap ? Object.keys(data.tripsMap).length : 0,
+        stops: data.stops ? Object.keys(data.stops).length : 0,
+        shapes: data.shapes ? Object.keys(data.shapes).length : 0,
+        stopTimesEntries: data.stopTimesByTrip ? Object.keys(data.stopTimesByTrip).length : 0
+      },
+      samples: {
+        // Get first few entries of each type
+        firstRoutes: data.routesMap ? 
+          Object.entries(data.routesMap).slice(0, 3).map(([id, route]) => ({ id, ...route })) : 
+          [],
+        firstTrips: data.tripsMap ? 
+          Object.entries(data.tripsMap).slice(0, 3).map(([id, trip]) => ({ id, ...trip })) : 
+          [],
+        firstStops: data.stops ? 
+          Object.entries(data.stops).slice(0, 3).map(([id, stop]) => ({ id, ...stop })) : 
+          [],
+        firstShapes: data.shapes ? 
+          Object.keys(data.shapes).slice(0, 2).map(id => ({
+            id,
+            pointCount: data.shapes[id].length,
+            firstPoint: data.shapes[id][0],
+            lastPoint: data.shapes[id][data.shapes[id].length - 1]
+          })) : 
+          []
+      }
+    };
+    
+    res.json(dump);
+    
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      scheduleLoaderType: typeof scheduleLoader
+    });
+  }
+});
+
+// Add a health check that tests the full pipeline
+app.get('/api/health/full', async (req, res) => {
+  try {
+    const startTime = Date.now();
+    
+    // Test 1: Proto loading
+    const protoStatus = !!root ? '✅ Loaded' : '❌ Failed';
+    
+    // Test 2: Schedule loading
+    let scheduleStatus = 'Not tested';
+    let scheduleCounts = {};
+    try {
+      await scheduleLoader.loadSchedules();
+      const data = scheduleLoader.scheduleData;
+      if (data) {
+        scheduleCounts = {
+          trips: data.tripsMap ? Object.keys(data.tripsMap).length : 0,
+          stops: data.stops ? Object.keys(data.stops).length : 0,
+          shapes: data.shapes ? Object.keys(data.shapes).length : 0
+        };
+        scheduleStatus = scheduleCounts.trips > 0 ? '✅ Loaded' : '⚠️ Empty';
+      } else {
+        scheduleStatus = '❌ No data';
+      }
+    } catch (error) {
+      scheduleStatus = `❌ Error: ${error.message}`;
+    }
+    
+    // Test 3: GTFS API connectivity
+    let gtfsStatus = 'Not tested';
+    try {
+      const testResult = await fetchGTFSFeed('vehicleupdates.pb', '36');
+      gtfsStatus = testResult.success ? '✅ Accessible' : `❌ ${testResult.error}`;
+    } catch (error) {
+      gtfsStatus = `❌ Error: ${error.message}`;
+    }
+    
+    // Test 4: Virtual vehicle system
+    let virtualStatus = 'Not tested';
+    try {
+      virtualStatus = virtualVehicleManager ? '✅ Initialized' : '❌ Not initialized';
+    } catch (error) {
+      virtualStatus = `❌ Error: ${error.message}`;
+    }
+    
+    const responseTime = Date.now() - startTime;
+    
+    res.json({
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      responseTimeMs: responseTime,
+      tests: {
+        proto_schema: protoStatus,
+        schedule_data: {
+          status: scheduleStatus,
+          counts: scheduleCounts
+        },
+        gtfs_api: gtfsStatus,
+        virtual_system: virtualStatus
+      },
+      environment: {
+        node_env: process.env.NODE_ENV,
+        vercel: !!process.env.VERCEL,
+        platform: process.platform
+      },
+      overall: scheduleCounts.trips > 0 ? '✅ Operational' : '⚠️ Schedule data missing'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+
 // Add this to your debugging endpoints section
 app.get('/api/debug/csv-raw', async (req, res) => {
   try {
@@ -1221,12 +1530,22 @@ app.get('/api/debug/schedule-verify', async (req, res) => {
     console.log('Loading schedule data...');
     const scheduleData = await scheduleLoader.loadSchedules();
     
+    if (!scheduleData) {
+      return res.status(500).json({
+        error: 'ScheduleLoader.loadSchedules() returned null/undefined',
+        scheduleLoader_state: {
+          hasScheduleData: !!scheduleLoader.scheduleData,
+          dataKeys: scheduleLoader.scheduleData ? Object.keys(scheduleLoader.scheduleData) : []
+        }
+      });
+    }
+    
     // Check specific stops from your virtual bus example
     const testStops = ['156087', '156011', '156083'];
     const stopResults = {};
     
     testStops.forEach(stopId => {
-      const stopData = scheduleData.stops[stopId];
+      const stopData = scheduleData.stops?.[stopId];
       stopResults[stopId] = stopData ? {
         found: true,
         lat: stopData.lat,
@@ -1238,11 +1557,21 @@ app.get('/api/debug/schedule-verify', async (req, res) => {
     // Get a sample trip
     const sampleTrips = Object.entries(scheduleData.tripsMap || {}).slice(0, 3);
     
+    // Check shapes
+    const sampleShapes = Object.keys(scheduleData.shapes || {}).slice(0, 2).map(id => ({
+      shape_id: id,
+      point_count: scheduleData.shapes[id].length,
+      has_coordinates: scheduleData.shapes[id].every(p => p.lat && p.lon)
+    }));
+    
     res.json({
-      status: 'success',
+      status: scheduleData.tripsMap ? 'success' : 'empty',
+      source: scheduleData.source || 'unknown',
+      timestamp: scheduleData.timestamp || new Date().toISOString(),
       counts: {
-        stops: Object.keys(scheduleData.stops || {}).length,
+        routes: Object.keys(scheduleData.routesMap || {}).length,
         trips: Object.keys(scheduleData.tripsMap || {}).length,
+        stops: Object.keys(scheduleData.stops || {}).length,
         shapes: Object.keys(scheduleData.shapes || {}).length,
         stop_times: Object.keys(scheduleData.stopTimesByTrip || {}).length
       },
@@ -1253,14 +1582,17 @@ app.get('/api/debug/schedule-verify', async (req, res) => {
         shape_id: trip.shape_id,
         block_id: trip.block_id
       })),
+      sample_shapes: sampleShapes,
       sample_stop_data: scheduleData.stops ? 
         Object.entries(scheduleData.stops).slice(0, 5).map(([id, data]) => ({ id, ...data })) :
-        []
+        [],
+      data_structure_ok: !!(scheduleData.tripsMap && scheduleData.stops && scheduleData.shapes)
     });
   } catch (error) {
     res.status(500).json({
       error: error.message,
-      stack: error.stack
+      stack: error.stack,
+      scheduleLoader_error: 'Failed in loadSchedules()'
     });
   }
 });
