@@ -540,6 +540,47 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+app.get('/api/debug/gtfs-structure', async (req, res) => {
+  try {
+    // First, let's check what's in the schedule data
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    
+    // Check the raw structure
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    res.json({
+      schedule_status: {
+        loaded: !!scheduleData,
+        trips_count: Object.keys(scheduleData?.tripsMap || {}).length,
+        stops_count: Object.keys(scheduleData?.stops || {}).length,
+        shapes_count: Object.keys(scheduleData?.shapes || {}).length,
+        stop_times_count: Object.keys(scheduleData?.stopTimesByTrip || {}).length
+      },
+      stops_sample: scheduleData?.stops ? 
+        Object.entries(scheduleData.stops).slice(0, 5).map(([id, data]) => ({ id, ...data })) :
+        'No stops loaded',
+      stop_ids_sample: scheduleData?.stops ? 
+        Object.keys(scheduleData.stops).slice(0, 10) :
+        'No stop IDs',
+      trips_sample: scheduleData?.tripsMap ?
+        Object.entries(scheduleData.tripsMap).slice(0, 3).map(([id, trip]) => ({
+          id,
+          route_id: trip.route_id,
+          shape_id: trip.shape_id,
+          service_id: trip.service_id
+        })) :
+        'No trips loaded'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
+
 app.get('/api/debug/gtfs-raw', async (req, res) => {
   try {
     // Fetch GTFS directly
