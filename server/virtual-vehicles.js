@@ -18,6 +18,31 @@ class VirtualVehicleManager {
     console.log('✅ VirtualVehicleManager initialized');
   }
 
+  // Add this method to debug schedule data
+  debugScheduleData() {
+    console.log('🔍 DEBUG Schedule Data:');
+    console.log(`- Has scheduleData: ${!!this.scheduleData}`);
+    console.log(`- Has tripsMap: ${!!this.scheduleData?.tripsMap}`);
+    console.log(`- Trips count: ${Object.keys(this.scheduleData?.tripsMap || {}).length}`);
+    console.log(`- Shapes count: ${Object.keys(this.scheduleData?.shapes || {}).length}`);
+    
+    // Show first few trip IDs to see format
+    const tripIds = Object.keys(this.scheduleData?.tripsMap || {});
+    console.log('Sample trip IDs:', tripIds.slice(0, 5));
+    
+    // Show first few shapes
+    const shapeIds = Object.keys(this.scheduleData?.shapes || {});
+    console.log('Sample shape IDs:', shapeIds.slice(0, 5));
+    
+    return {
+      hasData: !!this.scheduleData,
+      trips: tripIds.length,
+      shapes: shapeIds.length,
+      sampleTrips: tripIds.slice(0, 3),
+      sampleShapes: shapeIds.slice(0, 3)
+    };
+  }
+  
   // Set schedule data (called from server.js)
   setScheduleData(scheduleData) {
     this.scheduleData = scheduleData;
@@ -63,47 +88,67 @@ class VirtualVehicleManager {
 
   // Helper: Get shape ID from trip ID
   getShapeIdFromTrip(tripId, scheduleData) {
-    if (!tripId || !scheduleData?.tripsMap) return null;
+    if (!tripId || !scheduleData?.tripsMap) {
+      console.log(`❌ Missing tripId or scheduleData for: ${tripId}`);
+      return null;
+    }
     
     console.log(`🔍 Looking for shape ID for trip: ${tripId}`);
     
-    // Try exact match first
+    // Check if schedule data is empty
+    const tripKeys = Object.keys(scheduleData.tripsMap);
+    if (tripKeys.length === 0) {
+      console.log('⚠️ tripsMap is EMPTY! Schedule data not loaded properly.');
+      return null;
+    }
+    
+    // Your trip IDs are like "2369311:11648788:11653669"
+    // The block ID is the last part after colon
+    const parts = tripId.split(':');
+    
+    // Try finding by block ID (last numeric part)
+    if (parts.length >= 3) {
+      const blockId = parts[parts.length - 1];
+      console.log(`📋 Extracted block ID: ${blockId} from trip ID: ${tripId}`);
+      
+      // Look for any trip with this block ID
+      for (const [tripKey, trip] of Object.entries(scheduleData.tripsMap)) {
+        if (trip.block_id === blockId && trip.shape_id) {
+          console.log(`✅ Found shape ID via block match: ${trip.shape_id}`);
+          return trip.shape_id;
+        }
+      }
+    }
+    
+    // Try matching the numeric part
+    const numericPart = tripId.split(':').pop();
+    if (numericPart) {
+      // Check if any trip key contains this numeric part
+      for (const [tripKey, trip] of Object.entries(scheduleData.tripsMap)) {
+        if (tripKey.includes(numericPart) && trip.shape_id) {
+          console.log(`✅ Found shape ID via numeric match: ${trip.shape_id}`);
+          return trip.shape_id;
+        }
+      }
+    }
+    
+    // Try exact match (unlikely but worth trying)
     if (scheduleData.tripsMap[tripId]) {
       const shapeId = scheduleData.tripsMap[tripId].shape_id;
       console.log(`✅ Found shape ID via exact match: ${shapeId}`);
       return shapeId;
     }
     
-    // Try extracting numeric part (after last colon)
-    const parts = tripId.split(':');
-    if (parts.length >= 2) {
-      const lastPart = parts[parts.length - 1];
-      // Try matching trip_id from trips.txt (usually numeric)
-      const tripKey = Object.keys(scheduleData.tripsMap).find(key => 
-        key === lastPart || key.includes(lastPart)
-      );
-      
-      if (tripKey && scheduleData.tripsMap[tripKey].shape_id) {
-        const shapeId = scheduleData.tripsMap[tripKey].shape_id;
-        console.log(`✅ Found shape ID via partial match: ${shapeId}`);
-        return shapeId;
-      }
-    }
-    
-    // Try finding any trip with this block ID
-    const blockId = this.extractBlockIdFromTripId(tripId);
-    if (blockId) {
-      const tripWithBlock = Object.values(scheduleData.tripsMap).find(trip => 
-        trip.block_id === blockId && trip.shape_id
-      );
-      
-      if (tripWithBlock) {
-        console.log(`✅ Found shape ID via block match: ${tripWithBlock.shape_id}`);
-        return tripWithBlock.shape_id;
-      }
-    }
-    
     console.log(`❌ No shape ID found for trip ${tripId}`);
+    console.log(`   Available trip keys: ${Object.keys(scheduleData.tripsMap).slice(0, 5).join(', ')}...`);
+    
+    // Return a default shape ID if available
+    const firstShapeId = Object.keys(scheduleData.shapes || {})[0];
+    if (firstShapeId) {
+      console.log(`⚠️ Using default shape ID: ${firstShapeId}`);
+      return firstShapeId;
+    }
+    
     return null;
   }
 
