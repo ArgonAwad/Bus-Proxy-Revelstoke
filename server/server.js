@@ -374,7 +374,7 @@ app.get('/api/buses', async (req, res) => {
 app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    const allVirtuals = req.query.all_virtuals === 'true';  // NEW: ?all_virtuals=true shows ALL scheduled
+    const allVirtuals = req.query.all_virtuals === 'true';
     const startTime = Date.now();
 
     console.log(`[${new Date().toISOString()}] /api/virtuals called | operator=${operatorId} | all_virtuals=${allVirtuals}`);
@@ -392,22 +392,20 @@ app.get('/api/virtuals', async (req, res) => {
       });
     }
 
-    // These two lines MUST come before using processedVehicles / processedTrips
+    // THESE TWO LINES ARE CRITICAL — DO NOT DELETE OR MOVE THEM
     const processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data?.entity || []);
     const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data?.entity || []);
 
     const expectedBlocks = getExpectedBlockIdsFromTripUpdates(processedTrips);
     const activeRealBlocks = getActiveRealBlockIds(processedVehicles);
 
-    // Load schedule if needed
     if (!scheduleLoader.scheduleData?.tripsMap) {
       await scheduleLoader.loadSchedules();
     }
 
-    // Decide which blocks to generate virtuals for
     const blocksToUse = allVirtuals 
-      ? expectedBlocks                          // ALL scheduled
-      : expectedBlocks.filter(b => !activeRealBlocks.has(b));  // only missing
+      ? expectedBlocks 
+      : expectedBlocks.filter(b => !activeRealBlocks.has(b));
 
     const virtualEntities = [];
     const seenBlocks = new Set();
