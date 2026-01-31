@@ -374,20 +374,40 @@ app.get('/api/buses', async (req, res) => {
 app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    const allVirtuals = req.query.all_virtuals === 'true';  // new param
+    const allVirtuals = req.query.all_virtuals === 'true';  // NEW: ?all_virtuals=true shows ALL scheduled
     const startTime = Date.now();
 
-    // ... fetch vehicleResult, tripResult, process them ...
+    console.log(`[${new Date().toISOString()}] /api/virtuals called | operator=${operatorId} | all_virtuals=${allVirtuals}`);
+
+    const [vehicleResult, tripResult] = await Promise.all([
+      fetchGTFSFeed('vehicleupdates.pb', operatorId),
+      fetchGTFSFeed('tripupdates.pb', operatorId)
+    ]);
+
+    if (!vehicleResult.success || !tripResult.success) {
+      return res.status(503).json({
+        error: 'One or more feeds unavailable',
+        vehicle_success: vehicleResult.success,
+        trip_success: tripResult.success
+      });
+    }
+
+    // These two lines MUST come before using processedVehicles / processedTrips
+    const processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data?.entity || []);
+    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data?.entity || []);
 
     const expectedBlocks = getExpectedBlockIdsFromTripUpdates(processedTrips);
     const activeRealBlocks = getActiveRealBlockIds(processedVehicles);
 
+    // Load schedule if needed
     if (!scheduleLoader.scheduleData?.tripsMap) {
       await scheduleLoader.loadSchedules();
     }
 
-    // Use all or missing based on param
-    const blocksToUse = allVirtuals ? expectedBlocks : expectedBlocks.filter(b => !activeRealBlocks.has(b));
+    // Decide which blocks to generate virtuals for
+    const blocksToUse = allVirtuals 
+      ? expectedBlocks                          // ALL scheduled
+      : expectedBlocks.filter(b => !activeRealBlocks.has(b));  // only missing
 
     const virtualEntities = [];
     const seenBlocks = new Set();
@@ -424,12 +444,9 @@ app.get('/api/virtuals', async (req, res) => {
         fetchedAt: new Date().toISOString(),
         responseTimeMs: responseTime,
         mode: allVirtuals ? 'all_scheduled' : 'missing_only',
-        total_scheduled: expectedBlocks.length,
-        real_active: activeRealBlocks.size,
-        virtual_generated: virtualEntities.length,
-        note: allVirtuals 
-          ? "Showing ALL scheduled blocks as virtuals (test mode)"
-          : "Showing only missing blocks as virtuals"
+        total_scheduled_blocks: expectedBlocks.length,
+        real_active_blocks: activeRealBlocks.size,
+        virtuals_generated: virtualEntities.length
       },
       data: {
         virtual_positions: {
@@ -443,10 +460,13 @@ app.get('/api/virtuals', async (req, res) => {
       }
     });
 
-    console.log(`[Virtuals] ${allVirtuals ? 'All' : 'Missing'} mode: ${virtualEntities.length} generated`);
+    console.log(`Generated ${virtualEntities.length} virtual positions (${allVirtuals ? 'ALL mode' : 'missing only'})`);
   } catch (error) {
     console.error('Error in /api/virtuals:', error);
-    res.status(500).json({ error: 'Failed to generate virtuals', details: error.message });
+    res.status(500).json({
+      error: 'Failed to generate virtuals',
+      details: error.message
+    });
   }
 });
 
