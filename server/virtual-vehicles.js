@@ -1,6 +1,5 @@
 // virtual-vehicles.js
 import { DateTime } from 'luxon';
-import { scheduleLoader } from './server.js';
 
 class VirtualVehicleManager {
   constructor() {
@@ -14,6 +13,14 @@ class VirtualVehicleManager {
       NONE: 'none' // No virtual buses
     };
     this.currentMode = this.MODE.SUBS_ONLY; // Default mode
+    
+    // We'll get scheduleLoader passed in functions, not imported
+    this.scheduleData = null;
+  }
+
+  // Set schedule data (called from server.js)
+  setScheduleData(scheduleData) {
+    this.scheduleData = scheduleData;
   }
 
   // Set the virtual bus mode
@@ -28,6 +35,7 @@ class VirtualVehicleManager {
 
   // Get virtual vehicles based on current mode
   getVirtualVehicles(tripUpdates, scheduleData, realVehicleIds = new Set()) {
+    this.setScheduleData(scheduleData); // Store schedule data
     switch (this.currentMode) {
       case this.MODE.ALL_VIRTUAL:
         return this.generateAllVirtualVehicles(tripUpdates, scheduleData);
@@ -67,7 +75,7 @@ class VirtualVehicleManager {
   }
 
   // MODE 2: Only virtual buses for missing real buses
-    generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
+  generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
     const virtualVehicles = [];
     if (!tripUpdates || !tripUpdates.entity) return virtualVehicles;
 
@@ -320,13 +328,13 @@ class VirtualVehicleManager {
     return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
   }
 
-  updateVirtualPositions() {
+  updateVirtualPositions(scheduleData) {
     const now = Date.now();
     let updatedCount = 0;
     for (const [tripId, vehicle] of this.virtualVehicles) {
       const age = now - vehicle.lastUpdated;
       if (age > 30000) { // update every 30 seconds to reduce jitter
-        this.updateVehiclePosition(vehicle);
+        this.updateVehiclePosition(vehicle, scheduleData);
         vehicle.lastUpdated = now;
         updatedCount++;
       }
@@ -334,7 +342,7 @@ class VirtualVehicleManager {
     return updatedCount;
   }
 
-  updateVehiclePosition(vehicle) {
+  updateVehiclePosition(vehicle, scheduleData) {
     if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
       console.log(`Removing virtual ${vehicle.id} - no stop times`);
       this.virtualVehicles.delete(vehicle.id);
@@ -372,7 +380,7 @@ class VirtualVehicleManager {
       currentStop,
       nextStop,
       progress,
-      scheduleLoader.scheduleData,
+      scheduleData,
       vehicle.vehicle.trip.tripId
     );
 
