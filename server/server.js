@@ -540,6 +540,38 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+app.get('/api/debug/gtfs-raw', async (req, res) => {
+  try {
+    // Fetch GTFS directly
+    const response = await fetch('https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=36');
+    const zipBuffer = await response.arrayBuffer();
+    
+    const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(unzipper.Parse({ forceStream: true }));
+    const files = {};
+    
+    for await (const entry of zipStream) {
+      const fileName = entry.path;
+      if (entry.type === 'File' && fileName.endsWith('.txt')) {
+        let content = '';
+        for await (const chunk of entry) {
+          content += chunk.toString('utf8');
+        }
+        files[fileName] = content.substring(0, 1000); // First 1000 chars
+        console.log(`Extracted ${fileName}: ${content.length} chars`);
+      } else {
+        entry.autodrain();
+      }
+    }
+    
+    res.json({
+      files_available: Object.keys(files),
+      stops_preview: files['stops.txt'] ? files['stops.txt'].split('\n').slice(0, 10) : 'NOT FOUND',
+      trips_preview: files['trips.txt'] ? files['trips.txt'].split('\n').slice(0, 10) : 'NOT FOUND'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/api/debug/schedule', async (req, res) => {
   try {
