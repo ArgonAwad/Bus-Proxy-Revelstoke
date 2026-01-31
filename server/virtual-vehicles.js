@@ -241,6 +241,13 @@ generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds, all
   }
 
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
+  console.log('='.repeat(50));
+  console.log('📍 CALCULATING VIRTUAL BUS POSITION');
+  console.log(`Trip ID: ${tripId}`);
+  console.log(`Current Stop ID: ${currentStop.stopId}`);
+  console.log(`Progress: ${progress}`);
+  console.log(`Schedule Data Provided: ${!!scheduleData}`);
+  console.log(`Schedule Stops Available: ${scheduleData ? Object.keys(scheduleData.stops || {}).length : 0}`);
     if (!scheduleData || !scheduleData.stops) {
       console.warn('No scheduleData.stops available for position calculation');
       return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
