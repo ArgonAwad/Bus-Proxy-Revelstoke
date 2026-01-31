@@ -540,6 +540,68 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+app.get('/api/shapes', async (req, res) => {
+  try {
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    
+    const { shape_id, simplified } = req.query;
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    if (shape_id) {
+      // Return specific shape
+      const shapePoints = scheduleData.shapes?.[shape_id];
+      if (!shapePoints) {
+        return res.status(404).json({ error: 'Shape not found', shape_id });
+      }
+      
+      let points = shapePoints;
+      if (simplified === 'true') {
+        // Simplify shape for display (every 10th point)
+        points = shapePoints.filter((_, index) => index % 10 === 0);
+      }
+      
+      // Calculate bounding box
+      const lats = points.map(p => p.lat);
+      const lons = points.map(p => p.lon);
+      
+      res.json({
+        shape_id,
+        point_count: points.length,
+        original_count: shapePoints.length,
+        bounding_box: {
+          min_lat: Math.min(...lats),
+          max_lat: Math.max(...lats),
+          min_lon: Math.min(...lons),
+          max_lon: Math.max(...lons)
+        },
+        points: points.slice(0, 100) // Limit response
+      });
+    } else {
+      // Return all shapes summary
+      const shapes = scheduleData.shapes || {};
+      const shapeList = Object.keys(shapes).map(id => ({
+        shape_id: id,
+        point_count: shapes[id].length,
+        trips_using_shape: Object.values(scheduleData.tripsMap || {})
+          .filter(trip => trip.shape_id === id)
+          .map(trip => trip.trip_id)
+      }));
+      
+      res.json({
+        metadata: {
+          count: shapeList.length,
+          total_points: shapeList.reduce((sum, shape) => sum + shape.point_count, 0)
+        },
+        shapes: shapeList
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/debug/schedule-verify', async (req, res) => {
   try {
     // Force reload
