@@ -157,62 +157,116 @@ async loadSchedules() {
     throw localError;
   }
 }
-  // Improved CSV parser that handles quoted fields properly
+  
   // Improved CSV parser that handles your file format
 parseCSV(csvString) {
+  console.log(`\n📄 parseCSV called: ${csvString?.length || 0} chars`);
+  
   if (!csvString || csvString.trim().length === 0) {
-    console.warn('⚠️ parseCSV: Empty CSV string');
+    console.error('❌ parseCSV: Empty or null CSV string');
     return [];
   }
   
-  const lines = csvString.split(/\r?\n/).filter(line => line.trim() !== '');
-  console.log(`📄 parseCSV: Found ${lines.length} lines`);
+  // Split by lines and clean
+  const lines = csvString.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '');
+  console.log(`📊 Total lines after cleaning: ${lines.length}`);
   
   if (lines.length < 2) {
-    console.warn('⚠️ parseCSV: Not enough lines (need at least header + 1 data row)');
+    console.error(`❌ parseCSV: Not enough lines (need header + data). Got ${lines.length} lines`);
+    console.log('First few lines:', lines.slice(0, 3));
     return [];
   }
-
-  // Parse headers from first line
-  const headers = lines[0].split(',').map(h => h.trim());
-  console.log(`📋 Headers (${headers.length}): ${headers.join(', ')}`);
-
-  const result = [];
-  let skippedRows = 0;
   
+  // Parse headers - handle quoted fields
+  const headerLine = lines[0];
+  console.log(`📋 Header line: "${headerLine}"`);
+  
+  const headers = this.parseCSVLineSimple(headerLine);
+  console.log(`✅ Headers parsed (${headers.length}):`, headers);
+  
+  const result = [];
+  let errorCount = 0;
+  let successCount = 0;
+  
+  // Process data rows
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) {
-      skippedRows++;
-      continue;
-    }
-
-    // Simple split - your files don't have quoted commas
-    const values = line.split(',').map(v => v.trim());
+    const line = lines[i];
     
-    if (values.length !== headers.length) {
-      console.warn(`⚠️ Line ${i}: Column mismatch. Expected ${headers.length}, got ${values.length}`);
-      console.warn(`   Line: "${line.substring(0, 100)}..."`);
-      skippedRows++;
-      continue;
+    try {
+      const values = this.parseCSVLineSimple(line);
+      
+      if (values.length !== headers.length) {
+        console.warn(`⚠️ Line ${i}: Column mismatch. Expected ${headers.length}, got ${values.length}`);
+        console.warn(`   Line: "${line.substring(0, 100)}${line.length > 100 ? '...' : ''}"`);
+        errorCount++;
+        continue;
+      }
+      
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = values[j] || '';
+      }
+      
+      result.push(obj);
+      successCount++;
+      
+      // Log first few rows for verification
+      if (successCount <= 3) {
+        console.log(`✅ Row ${i} sample:`, obj);
+      }
+      
+    } catch (err) {
+      console.error(`❌ Error parsing line ${i}:`, err.message);
+      console.error(`   Line: "${line.substring(0, 100)}${line.length > 100 ? '...' : ''}"`);
+      errorCount++;
     }
-
-    const obj = {};
-    for (let j = 0; j < headers.length; j++) {
-      obj[headers[j]] = values[j] || '';
-    }
-    
-    result.push(obj);
   }
   
-  console.log(`✅ parseCSV: Parsed ${result.length} rows, skipped ${skippedRows}`);
+  console.log(`📈 parseCSV result: ${successCount} successful, ${errorCount} errors`);
   
   if (result.length > 0) {
-    console.log('📝 First row sample:');
-    Object.entries(result[0]).forEach(([key, value]) => {
-      console.log(`   ${key}: ${value}`);
+    console.log('🎯 First parsed row (full):', JSON.stringify(result[0], null, 2));
+  } else {
+    console.error('❌ NO DATA PARSED! Check CSV format');
+    // Log more info about the file
+    console.log('📝 File sample (first 5 lines):');
+    lines.slice(0, 5).forEach((line, idx) => {
+      console.log(`   ${idx}: "${line}"`);
     });
   }
+  
+  return result;
+}
+
+// Simple CSV line parser that handles your format
+parseCSVLineSimple(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+        // Escaped quote inside quotes
+        current += '"';
+        i++;
+      } else {
+        // Start or end quotes
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      // End of field
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  // Add the last field
+  result.push(current.trim());
   
   return result;
 }
@@ -238,60 +292,75 @@ parseCSV(csvString) {
   }
 
   createStopsMap(stopsArray) {
-  console.log(`createStopsMap: Processing ${stopsArray?.length || 0} stops`);
+  console.log(`\n🗺️ createStopsMap: Processing ${stopsArray?.length || 0} stops`);
+  
+  if (!stopsArray || stopsArray.length === 0) {
+    console.error('❌ createStopsMap: No stops data provided!');
+    console.log('What was passed:', stopsArray);
+    return {};
+  }
+  
+  console.log('🔍 First stop in array:', stopsArray[0]);
+  console.log('🔍 First stop keys:', Object.keys(stopsArray[0]));
   
   const map = {};
   let validCount = 0;
-  
-  if (!stopsArray || stopsArray.length === 0) {
-    console.error('createStopsMap: No stops data provided');
-    return map;
-  }
-  
-  // Show first stop structure
-  console.log('Sample stop structure:', stopsArray[0]);
+  let invalidCount = 0;
   
   stopsArray.forEach((stop, index) => {
     try {
-      // Use the exact field names from your sample
-      const stopId = stop.stop_id;
-      const lat = parseFloat(stop.stop_lat);
-      const lon = parseFloat(stop.stop_lon);
-      const name = stop.stop_name || 'Unknown';
+      // Debug: Show what fields we have
+      if (index === 0) {
+        console.log('📋 Available fields in stop object:', Object.keys(stop));
+        console.log('📋 Sample values:', stop);
+      }
+      
+      // Try different possible field names
+      const stopId = stop.stop_id || stop.stop_id || stop.id;
+      const stopLat = stop.stop_lat || stop.lat || stop.latitude;
+      const stopLon = stop.stop_lon || stop.lon || stop.longitude;
+      const stopName = stop.stop_name || stop.name || 'Unknown';
       
       if (!stopId) {
-        console.warn(`Stop at index ${index} has no ID`);
+        console.warn(`Stop at index ${index} has no ID:`, stop);
+        invalidCount++;
         return;
       }
+      
+      const id = String(stopId).trim();
+      const lat = parseFloat(stopLat);
+      const lon = parseFloat(stopLon);
       
       if (isNaN(lat) || isNaN(lon)) {
-        console.warn(`Stop ${stopId} has invalid coordinates: lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
+        console.warn(`Invalid coordinates for stop ${id}: lat=${stopLat}, lon=${stopLon}`);
+        invalidCount++;
         return;
       }
       
-      // Store with the exact ID from the file
-      map[stopId] = {
+      map[id] = {
         lat,
         lon,
-        name
+        name: stopName.trim()
       };
       validCount++;
       
-      // Log a few for verification
+      // Log first few for verification
       if (validCount <= 3) {
-        console.log(`✓ Added stop ${stopId}: "${name}" at ${lat}, ${lon}`);
+        console.log(`✅ Added stop ${id}: "${map[id].name}" at ${lat}, ${lon}`);
       }
+      
     } catch (err) {
-      console.warn(`Error processing stop at index ${index}:`, err.message);
+      console.error(`Error processing stop at index ${index}:`, err.message);
+      invalidCount++;
     }
   });
   
-  console.log(`createStopsMap: Successfully loaded ${validCount} stops out of ${stopsArray.length}`);
+  console.log(`📊 createStopsMap: ${validCount} valid, ${invalidCount} invalid`);
   
-  // Verify we found the stops from your virtual bus example
+  // Verify specific stops we know should exist
   const testStops = ['156087', '156011', '156083'];
   testStops.forEach(id => {
-    console.log(`Stop ${id} in map: ${map[id] ? 'YES' : 'NO'}`);
+    console.log(`🔍 Looking for stop ${id}: ${map[id] ? '✅ FOUND' : '❌ NOT FOUND'}`);
   });
   
   return map;
