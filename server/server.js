@@ -540,6 +540,99 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== ESSENTIAL DEBUGGING ENDPOINTS ====================
+// Add this endpoint to test virtual movement
+app.get('/api/debug/test-virtual-movement', async (req, res) => {
+  try {
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Find a trip with a shape for testing
+    const trips = Object.entries(scheduleData.tripsMap || {});
+    const tripWithShape = trips.find(([id, trip]) => trip.shape_id);
+    
+    if (!tripWithShape) {
+      return res.json({ 
+        error: 'No trips with shapes found',
+        total_trips: trips.length,
+        trips_with_shapes: trips.filter(([id, trip]) => trip.shape_id).length
+      });
+    }
+    
+    const [tripId, trip] = tripWithShape;
+    const shapeId = trip.shape_id;
+    const shapePoints = scheduleData.shapes?.[shapeId];
+    
+    // Create a test virtual vehicle
+    const testVehicle = {
+      id: 'MOVEMENT-TEST-1',
+      vehicle: {
+        trip: {
+          tripId: tripId,
+          routeId: trip.route_id,
+          blockId: trip.block_id || 'TEST-BLOCK'
+        },
+        vehicle: {
+          id: 'MOVEMENT-TEST-1',
+          label: 'Movement Test Bus',
+          licensePlate: '',
+          wheelchairAccessible: 0
+        },
+        position: {
+          latitude: shapePoints?.[0]?.lat || 50.9981,
+          longitude: shapePoints?.[0]?.lon || -118.1957,
+          bearing: 0,
+          speed: 5.0
+        },
+        timestamp: Math.floor(Date.now() / 1000),
+        currentStatus: 'IN_TRANSIT_TO'
+      },
+      _metadata: {
+        shapeId: shapeId,
+        progress: 0.1,
+        lastUpdate: Date.now(),
+        stopTimes: [
+          {
+            stopId: 'TEST-START',
+            arrival: { time: Math.floor(Date.now() / 1000) - 300 },
+            departure: { time: Math.floor(Date.now() / 1000) - 240 }
+          },
+          {
+            stopId: 'TEST-END',
+            arrival: { time: Math.floor(Date.now() / 1000) + 600 },
+            departure: { time: Math.floor(Date.now() / 1000) + 660 }
+          }
+        ]
+      },
+      lastUpdated: Date.now()
+    };
+    
+    // Store in virtual vehicle manager
+    virtualVehicleManager.virtualVehicles.set('MOVEMENT-TEST-1', testVehicle);
+    
+    // Force update to see movement
+    const updateResult = virtualVehicleManager.forceUpdateAllVirtuals(scheduleData);
+    
+    res.json({
+      test_created: true,
+      vehicle_id: 'MOVEMENT-TEST-1',
+      trip: {
+        id: tripId,
+        shape_id: shapeId,
+        shape_points: shapePoints?.length || 0
+      },
+      update_result: updateResult,
+      virtual_count: virtualVehicleManager.virtualVehicles.size
+    });
+    
+  } catch (error) {
+    console.error('Virtual movement test error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Add this endpoint to trace the data flow
 app.get('/api/debug/data-flow', async (req, res) => {
   try {
