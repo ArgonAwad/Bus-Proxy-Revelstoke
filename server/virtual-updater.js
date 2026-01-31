@@ -2,10 +2,11 @@
 import virtualVehicleManager from './virtual-vehicles.js';
 
 class VirtualUpdater {
-  constructor(updateInterval = 10000) { // 10 seconds (was 30)
+  constructor(updateInterval = 5000) { // 5 seconds (more frequent)
     this.updateInterval = updateInterval;
     this.intervalId = null;
     this.isRunning = false;
+    this.lastUpdate = null;
   }
 
   start() {
@@ -16,16 +17,19 @@ class VirtualUpdater {
     
     console.log(`🚀 Starting virtual vehicle updater (${this.updateInterval}ms interval)...`);
     this.isRunning = true;
+    this.lastUpdate = Date.now();
     
     this.intervalId = setInterval(() => {
       try {
-        const updated = virtualVehicleManager.updateVirtualPositions();
-        virtualVehicleManager.cleanupOldVehicles(60); // Clean up after 60 minutes
+        console.log(`⏰ Virtual updater running...`);
+        const result = virtualVehicleManager.updateVirtualPositions();
         
         // Only log if something actually changed
-        if (updated > 0) {
-          console.log(`🔄 Updated ${updated} virtual vehicle positions`);
+        if (result.updated > 0 || result.removed > 0) {
+          console.log(`📈 Virtual update: ${result.updated} updated, ${result.removed} removed`);
         }
+        
+        this.lastUpdate = Date.now();
       } catch (error) {
         console.error('❌ Error in virtual vehicle update:', error);
       }
@@ -49,11 +53,18 @@ class VirtualUpdater {
     }
   }
 
+  refresh() {
+    console.log('🔄 Manually refreshing virtual positions');
+    virtualVehicleManager.updateVirtualPositions();
+    this.lastUpdate = Date.now();
+  }
+
   getStatus() {
     return {
       isRunning: this.isRunning,
       updateInterval: this.updateInterval,
-      virtualVehicles: virtualVehicleManager.getVirtualVehicleCount()
+      lastUpdate: this.lastUpdate,
+      virtualVehicles: virtualVehicleManager.virtualVehicles.size
     };
   }
 }
