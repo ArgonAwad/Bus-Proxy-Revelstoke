@@ -542,13 +542,24 @@ app.get('/api/trip_updates', async (req, res) => {
 // ==================== TESTING ENDPOINTS ====================
 app.get('/api/debug/gtfs-structure', async (req, res) => {
   try {
-    // First, let's check what's in the schedule data
-    if (!scheduleLoader.scheduleData?.tripsMap) {
-      await scheduleLoader.loadSchedules();
-    }
+    // Force reload to see what happens
+    console.log('Forcing schedule reload...');
+    await scheduleLoader.loadSchedules();
     
-    // Check the raw structure
     const scheduleData = scheduleLoader.scheduleData;
+    
+    // Check local directory for files
+    let localFiles = {};
+    try {
+      const files = await fs.readdir(SCHEDULE_DIR);
+      localFiles = {
+        exists: true,
+        file_count: files.length,
+        files: files.filter(f => f.endsWith('.txt'))
+      };
+    } catch (err) {
+      localFiles = { exists: false, error: err.message };
+    }
     
     res.json({
       schedule_status: {
@@ -558,20 +569,12 @@ app.get('/api/debug/gtfs-structure', async (req, res) => {
         shapes_count: Object.keys(scheduleData?.shapes || {}).length,
         stop_times_count: Object.keys(scheduleData?.stopTimesByTrip || {}).length
       },
-      stops_sample: scheduleData?.stops ? 
-        Object.entries(scheduleData.stops).slice(0, 5).map(([id, data]) => ({ id, ...data })) :
-        'No stops loaded',
-      stop_ids_sample: scheduleData?.stops ? 
-        Object.keys(scheduleData.stops).slice(0, 10) :
-        'No stop IDs',
-      trips_sample: scheduleData?.tripsMap ?
-        Object.entries(scheduleData.tripsMap).slice(0, 3).map(([id, trip]) => ({
-          id,
-          route_id: trip.route_id,
-          shape_id: trip.shape_id,
-          service_id: trip.service_id
-        })) :
-        'No trips loaded'
+      local_files: localFiles,
+      sample_data: {
+        first_trip_key: Object.keys(scheduleData?.tripsMap || {})[0],
+        first_stop_key: Object.keys(scheduleData?.stops || {})[0],
+        first_shape_key: Object.keys(scheduleData?.shapes || {})[0]
+      }
     });
   } catch (error) {
     res.status(500).json({ 
