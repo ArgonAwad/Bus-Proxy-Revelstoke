@@ -177,6 +177,35 @@ function addParsedBlockIdToTripUpdates(tripUpdateEntities) {
   });
 }
 
+// Get unique expected blockIds from trip updates (blocks that should be running)
+function getExpectedBlockIdsFromTripUpdates(tripUpdateEntities) {
+  const blockIds = new Set();
+  if (!Array.isArray(tripUpdateEntities)) return blockIds;
+
+  tripUpdateEntities.forEach(entity => {
+    const tripId = entity?.tripUpdate?.trip?.tripId;
+    if (tripId) {
+      const blockId = extractBlockIdFromTripId(tripId);
+      if (blockId) blockIds.add(blockId);
+    }
+  });
+
+  return Array.from(blockIds);
+}
+
+// Get set of blockIds that have at least one real vehicle claiming them
+function getActiveRealBlockIds(vehicleEntities) {
+  const blockIds = new Set();
+  if (!Array.isArray(vehicleEntities)) return blockIds;
+
+  vehicleEntities.forEach(entity => {
+    const blockId = entity?.vehicle?.trip?.blockId;
+    if (blockId) blockIds.add(blockId);
+  });
+
+  return blockIds;
+}
+
 // Enhanced vehicle positions with virtual vehicles + parsed blockId
 async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, includeVirtual = true, virtualMode = 'subs') {
   try {
@@ -534,6 +563,102 @@ app.get('/api/trip_updates', async (req, res) => {
   }
 });
 
+// Diagnostic endpoint: list blocks that are scheduled (in tripupdates) but have no real vehicle
+app.get('/api/virtuals', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const startTime = Date.now();
+
+    console.log(`[${new Date().toISOString()}] /api/virtuals called for operator ${operatorId}`);
+
+    const [vehicleResult, tripResult] = await Promise.all([
+      fetchGTFSFeed('vehicleupdates.pb', operatorId),
+      fetchGTFSFeed('tripupdates.pb', operatorId)
+    ]);
+
+    if (!vehicleResult.success || !tripResult.success) {
+      return res.status(503).json({
+        error: 'One or more feeds unavailable',
+        vehicle_success: vehicleResult.success,
+        trip_success: tripResult.success,
+        vehicle_error: vehicleResult.error,
+        trip_error: tripResult.error
+      });
+    }
+
+    // Process entities to ensure blockIds are attached
+    const processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data?.entity || []);
+    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data?.entity || []);
+
+    const expectedBlocks = getExpectedBlockIdsFromTripUpdates(processedTrips);
+    const activeRealBlocks = getActiveRealBlockIds(processedVehicles);
+
+    const missingBlocks = expectedBlocks.filter(b => !activeRealBlocks.has(b));
+
+    // Build enriched candidate list (one entry per unique blockId)
+    const virtualCandidates = [];
+    const seenBlocks = new Set(); // avoid dups if multiple trips per block
+
+    processedTrips.forEach(entity => {
+      const tu = entity.tripUpdate;
+      if (!tu) return;
+
+      const tripId = tu.trip?.tripId;
+      const blockId = extractBlockIdFromTripId(tripId);
+      if (!blockId || !missingBlocks.includes(blockId) || seenBlocks.has(blockId)) return;
+
+      seenBlocks.add(blockId);
+
+      virtualCandidates.push({
+        blockId,
+        tripId,
+        routeId: tu.trip?.routeId || 'unknown',
+        directionId: tu.trip?.directionId || 0,
+        startDate: tu.trip?.startDate || null,
+        startTime: tu.trip?.startTime || null,
+        scheduleRelationship: tu.trip?.scheduleRelationship || 'SCHEDULED',
+        // Rough "first upcoming stop" for debugging where it should be
+        firstStopUpdate: tu.stopTimeUpdate?.[0] ? {
+          stopId: tu.stopTimeUpdate[0].stopId,
+          arrivalTime: tu.stopTimeUpdate[0].arrival?.time,
+          departureTime: tu.stopTimeUpdate[0].departure?.time,
+          delay: tu.stopTimeUpdate[0].arrival?.delay || tu.stopTimeUpdate[0].departure?.delay || 0
+        } : null,
+        // Count total stops for context
+        totalStops: tu.stopTimeUpdate?.length || 0
+      });
+    });
+
+    const responseTime = Date.now() - startTime;
+
+    res.json({
+      metadata: {
+        operatorId,
+        fetchedAt: new Date().toISOString(),
+        responseTimeMs: responseTime,
+        total_expected_blocks: expectedBlocks.length,
+        active_real_blocks: activeRealBlocks.size,
+        missing_blocks_count: missingBlocks.length,
+        virtual_candidates_count: virtualCandidates.length
+      },
+      data: {
+        expected_block_ids: expectedBlocks.sort(),
+        active_real_block_ids: Array.from(activeRealBlocks).sort(),
+        missing_block_ids: missingBlocks.sort(),
+        virtual_candidates: virtualCandidates
+      }
+    });
+
+    console.log(`/api/virtuals: Found ${missingBlocks.length} missing blocks (candidates for virtuals)`);
+  } catch (error) {
+    console.error('Error in /api/virtuals:', error);
+    res.status(500).json({
+      error: 'Failed to generate virtual candidates',
+      details: error.message
+    });
+  }
+});
+
 // ==================== UPDATED ROOT ENDPOINT WITH DOCUMENTATION ====================
 
 app.get('/', (req, res) => {
@@ -594,6 +719,7 @@ app.get('/', (req, res) => {
      
       <h2>🔧 Testing & Debug Endpoints</h2>
       <ul>
+        <li><a href="/api/virtuals" target="_blank">/api/virtuals</a> - List missing blocks / virtual candidates (realtime only)</li>
         <li><a href="/api/test_structure" target="_blank">/api/test_structure</a> - Check vehicle object structure</li>
         <li><a href="/api/test_tracker_compatibility" target="_blank">/api/test_tracker_compatibility</a> - Test tracker compatibility</li>
         <li><a href="/api/trip_updates" target="_blank">/api/trip_updates</a> - Trip updates only</li>
@@ -602,6 +728,7 @@ app.get('/', (req, res) => {
       <h2>🔍 Current Status</h2>
       <p><strong>Working:</strong></p>
       <ul>
+        <li>Virtual candidate detection via /api/virtuals</li>
         <li>Real vehicle positions with parsed block IDs</li>
         <li>Trip updates with parsed block IDs</li>
         <li>Service alerts</li>
