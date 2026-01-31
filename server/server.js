@@ -5,8 +5,6 @@ import protobuf from 'protobufjs';
 import virtualVehicleManager from './virtual-vehicles.js';
 import virtualUpdater from './virtual-updater.js';
 import ScheduleLoader from './schedule-loader.js';
-import fs from 'fs/promises';
-import path from 'path';
 
 const scheduleLoader = new ScheduleLoader();
 
