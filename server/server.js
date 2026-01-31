@@ -540,6 +540,55 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+app.get('/api/debug/schedule-verify', async (req, res) => {
+  try {
+    // Force reload
+    console.log('Loading schedule data...');
+    const scheduleData = await scheduleLoader.loadSchedules();
+    
+    // Check specific stops from your virtual bus example
+    const testStops = ['156087', '156011', '156083'];
+    const stopResults = {};
+    
+    testStops.forEach(stopId => {
+      const stopData = scheduleData.stops[stopId];
+      stopResults[stopId] = stopData ? {
+        found: true,
+        lat: stopData.lat,
+        lon: stopData.lon,
+        name: stopData.name
+      } : { found: false };
+    });
+    
+    // Get a sample trip
+    const sampleTrips = Object.entries(scheduleData.tripsMap || {}).slice(0, 3);
+    
+    res.json({
+      status: 'success',
+      counts: {
+        stops: Object.keys(scheduleData.stops || {}).length,
+        trips: Object.keys(scheduleData.tripsMap || {}).length,
+        shapes: Object.keys(scheduleData.shapes || {}).length,
+        stop_times: Object.keys(scheduleData.stopTimesByTrip || {}).length
+      },
+      test_stops: stopResults,
+      sample_trips: sampleTrips.map(([tripId, trip]) => ({
+        trip_id: tripId,
+        route_id: trip.route_id,
+        shape_id: trip.shape_id,
+        block_id: trip.block_id
+      })),
+      sample_stop_data: scheduleData.stops ? 
+        Object.entries(scheduleData.stops).slice(0, 5).map(([id, data]) => ({ id, ...data })) :
+        []
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
 app.get('/api/debug/gtfs-files', async (req, res) => {
   try {
     const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
