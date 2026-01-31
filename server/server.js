@@ -540,6 +540,34 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+
+app.get('/api/debug/schedule', async (req, res) => {
+  try {
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    
+    // Test the exact stops from your virtual buses
+    const testStops = ['156087', '156011', '156083'];
+    const stopResults = {};
+    
+    testStops.forEach(stopId => {
+      stopResults[stopId] = scheduleLoader.scheduleData?.stops?.[stopId] || 'NOT FOUND';
+    });
+    
+    res.json({
+      schedule_loaded: !!scheduleLoader.scheduleData,
+      stops_count: Object.keys(scheduleLoader.scheduleData?.stops || {}).length,
+      test_stops: stopResults,
+      sample_stops: Object.entries(scheduleLoader.scheduleData?.stops || {})
+        .slice(0, 5)
+        .map(([id, data]) => ({ id, ...data }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/test_structure', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
