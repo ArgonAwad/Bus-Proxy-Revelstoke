@@ -540,6 +540,43 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== TESTING ENDPOINTS ====================
+app.get('/api/debug/gtfs-files', async (req, res) => {
+  try {
+    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    
+    // Check what files exist locally
+    const files = await fs.readdir(SCHEDULE_DIR);
+    const txtFiles = files.filter(f => f.endsWith('.txt'));
+    
+    const fileContents = {};
+    
+    for (const fileName of txtFiles) {
+      try {
+        const filePath = path.join(SCHEDULE_DIR, fileName);
+        const content = await fs.readFile(filePath, 'utf-8');
+        fileContents[fileName] = {
+          size: content.length,
+          first_100_chars: content.substring(0, 100),
+          line_count: content.split('\n').length
+        };
+      } catch (err) {
+        fileContents[fileName] = { error: err.message };
+      }
+    }
+    
+    res.json({
+      schedule_dir: SCHEDULE_DIR,
+      files_found: txtFiles,
+      file_contents: fileContents
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
+
 app.get('/api/debug/gtfs-structure', async (req, res) => {
   try {
     // Force reload to see what happens
