@@ -23,99 +23,123 @@ class ScheduleLoader {
    * Tries API first → falls back to local files if anything fails
    */
   async loadSchedules() {
-    try {
-      console.log(`[${new Date().toISOString()}] Fetching fresh GTFS from BC Transit for operator 36...`);
-      const response = await fetch(GTFS_URL, { timeout: 30000 });
-      if (!response.ok) {
-        throw new Error(`GTFS fetch failed: ${response.status} ${response.statusText}`);
-      }
-
-      const zipBuffer = await response.arrayBuffer();
-      console.log(`ZIP downloaded, size: ${(zipBuffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
-
-      const zipStream = Readable.from(Buffer.from(zipBuffer)).pipe(unzipper.Parse({ forceStream: true }));
-      const files = {};
-
-      for await (const entry of zipStream) {
-        const fileName = entry.path;
-        if (entry.type === 'File' && fileName.endsWith('.txt')) {
-          let content = '';
-          for await (const chunk of entry) {
-            content += chunk.toString('utf8');
-          }
-          files[fileName] = content;
-          console.log(` Extracted: ${fileName} (${content.length} chars)`);
-        } else {
-          entry.autodrain();
-        }
-      }
-
-      const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
-      for (const file of requiredFiles) {
-        if (!files[file]) {
-          throw new Error(`Missing required file in GTFS ZIP: ${file}`);
-        }
-      }
-
-      const routes = this.parseCSV(files['routes.txt']);
-      const trips = this.parseCSV(files['trips.txt']);
-      const stops = this.parseCSV(files['stops.txt']);
-      const stopTimes = this.parseCSV(files['stop_times.txt']);
-      const shapes = this.parseCSV(files['shapes.txt']);
-
-      console.log(`Parsed: ${routes.length} routes | ${trips.length} trips | ${stops.length} stops | ${stopTimes.length} stop_times | ${shapes.length} shapes`);
-
-      this.scheduleData.routesMap = this.createRoutesMap(routes);
-      this.scheduleData.tripsMap = this.createTripsMap(trips);
-      this.scheduleData.stops = this.createStopsMap(stops);
-      this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
-      this.scheduleData.shapes = this.createShapesMap(shapes);
-
-      console.log(`[${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
-      console.log(`Stops loaded: ${Object.keys(this.scheduleData.stops).length}`);
-      console.log(`Sample stop 156087:`, this.scheduleData.stops['156087'] || 'NOT FOUND');
-
-      return this.scheduleData;
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] Failed to load dynamic GTFS:`, error.message);
-      console.log('Falling back to local static GTFS files...');
-      return await this.loadFromLocal();
+  try {
+    console.log(`[${new Date().toISOString()}] Fetching fresh GTFS from BC Transit for operator 36...`);
+    const response = await fetch(GTFS_URL, { timeout: 30000 });
+    if (!response.ok) {
+      throw new Error(`GTFS fetch failed: ${response.status} ${response.statusText}`);
     }
+
+    const zipBuffer = await response.arrayBuffer();
+    console.log(`ZIP downloaded, size: ${(zipBuffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
+
+    // Instead of streaming, let's use a simpler approach
+    // We'll write to a temp file and read it
+    const tempDir = path.join(process.cwd(), 'temp_gtfs');
+    await fs.mkdir(tempDir, { recursive: true });
+    
+    const zipPath = path.join(tempDir, 'gtfs.zip');
+    await fs.writeFile(zipPath, Buffer.from(zipBuffer));
+    
+    console.log('Extracting ZIP...');
+    const directory = await unzipper.Open.file(zipPath);
+    
+    const files = {};
+    const fileNames = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
+    
+    for (const fileName of fileNames) {
+      const fileEntry = directory.files.find(f => f.path === fileName);
+      if (fileEntry) {
+        const content = await fileEntry.buffer();
+        const text = content.toString('utf8');
+        files[fileName] = text;
+        console.log(`Extracted ${fileName}: ${text.length} chars`);
+        
+        // Log first few lines
+        const lines = text.split('\n');
+        console.log(`First 3 lines of ${fileName}:`);
+        lines.slice(0, 3).forEach((line, i) => console.log(`  ${i+1}: ${line}`));
+      } else {
+        console.warn(`File not found in ZIP: ${fileName}`);
+      }
+    }
+    
+    // Clean up
+    await fs.rm(tempDir, { recursive: true, force: true });
+    
+    // Parse the files
+    const routes = this.parseCSV(files['routes.txt'] || '');
+    const trips = this.parseCSV(files['trips.txt'] || '');
+    const stops = this.parseCSV(files['stops.txt'] || '');
+    const stopTimes = this.parseCSV(files['stop_times.txt'] || '');
+    const shapes = this.parseCSV(files['shapes.txt'] || '');
+    
+    console.log(`Parsed counts: ${routes.length} routes, ${trips.length} trips, ${stops.length} stops, ${stopTimes.length} stop_times, ${shapes.length} shapes`);
+    
+    // Build maps
+    this.scheduleData.routesMap = this.createRoutesMap(routes);
+    this.scheduleData.tripsMap = this.createTripsMap(trips);
+    this.scheduleData.stops = this.createStopsMap(stops);
+    this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
+    this.scheduleData.shapes = this.createShapesMap(shapes);
+    
+    console.log(`[${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
+    
+    return this.scheduleData;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Failed to load dynamic GTFS:`, error.message);
+    console.error('Error stack:', error.stack);
+    
+    console.log('Falling back to local static GTFS files...');
+    return await this.loadFromLocal();
   }
+}
 
   async loadFromLocal() {
-    try {
-      const files = {
-        routes: await this.readLocalCSV('routes.txt'),
-        trips: await this.readLocalCSV('trips.txt'),
-        stops: await this.readLocalCSV('stops.txt'),
-        stopTimes: await this.readLocalCSV('stop_times.txt'),
-        shapes: await this.readLocalCSV('shapes.txt')
-      };
-
-      this.scheduleData.routesMap = this.createRoutesMap(files.routes);
-      this.scheduleData.tripsMap = this.createTripsMap(files.trips);
-      this.scheduleData.stops = this.createStopsMap(files.stops);
-      this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(files.stopTimes);
-      this.scheduleData.shapes = this.createShapesMap(files.shapes);
-
-      console.log(`[${new Date().toISOString()}] Loaded schedule data from local fallback files`);
-      console.log(`Stops loaded (local): ${Object.keys(this.scheduleData.stops).length}`);
-
-      return this.scheduleData;
-    } catch (localError) {
-      console.error('Local fallback failed:', localError.message);
-      throw localError;
+  try {
+    console.log('Attempting to load from local GTFS files...');
+    
+    const fileNames = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
+    const files = {};
+    
+    for (const fileName of fileNames) {
+      try {
+        const filePath = path.join(SCHEDULE_DIR, fileName);
+        const content = await fs.readFile(filePath, 'utf-8');
+        files[fileName] = content;
+        console.log(`Read local ${fileName}: ${content.length} chars`);
+        
+        // Show first line
+        const firstLine = content.split('\n')[0];
+        console.log(`  First line: ${firstLine?.substring(0, 100)}...`);
+      } catch (fileError) {
+        console.error(`Failed to read local file ${fileName}:`, fileError.message);
+      }
     }
+    
+    const routes = this.parseCSV(files['routes.txt'] || '');
+    const trips = this.parseCSV(files['trips.txt'] || '');
+    const stops = this.parseCSV(files['stops.txt'] || '');
+    const stopTimes = this.parseCSV(files['stop_times.txt'] || '');
+    const shapes = this.parseCSV(files['shapes.txt'] || '');
+    
+    console.log(`Local parsed counts: ${routes.length} routes, ${trips.length} trips, ${stops.length} stops`);
+    
+    this.scheduleData.routesMap = this.createRoutesMap(routes);
+    this.scheduleData.tripsMap = this.createTripsMap(trips);
+    this.scheduleData.stops = this.createStopsMap(stops);
+    this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
+    this.scheduleData.shapes = this.createShapesMap(shapes);
+    
+    console.log(`[${new Date().toISOString()}] Loaded schedule data from local fallback files`);
+    
+    return this.scheduleData;
+  } catch (localError) {
+    console.error('Local fallback failed:', localError.message);
+    console.error('Stack:', localError.stack);
+    throw localError;
   }
-
-  async readLocalCSV(filename) {
-    const filePath = path.join(SCHEDULE_DIR, filename);
-    const content = await fs.readFile(filePath, 'utf-8');
-    console.log(` Read local file: ${filename} (${content.length} chars)`);
-    return this.parseCSV(content);
-  }
-
+}
   // Improved CSV parser that handles quoted fields properly
   parseCSV(csvString) {
     if (!csvString.trim()) return [];
