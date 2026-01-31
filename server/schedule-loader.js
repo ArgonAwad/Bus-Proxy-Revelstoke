@@ -173,46 +173,51 @@ class ScheduleLoader {
 
   // Helper to parse a single CSV line with quoted fields
   parseCSV(csvString) {
-  if (!csvString.trim()) {
-    console.warn('Empty CSV string provided');
+  if (!csvString || !csvString.trim()) {
+    console.warn('parseCSV: Empty CSV string provided');
     return [];
   }
   
-  const lines = csvString.split(/\r?\n/);
-  console.log(`Parsing CSV with ${lines.length} lines`);
+  const lines = csvString.split(/\r?\n/).filter(line => line.trim() !== '');
+  console.log(`parseCSV: Found ${lines.length} lines (including header)`);
   
   if (lines.length < 2) {
-    console.warn('CSV has no data rows');
+    console.warn('parseCSV: Not enough lines for data');
     return [];
   }
 
-  // Clean up headers
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-  console.log(`CSV headers (${headers.length}):`, headers);
+  // Parse headers (first line)
+  const headers = lines[0].split(',').map(h => h.trim());
+  console.log(`parseCSV: Headers (${headers.length}):`, headers);
 
   const result = [];
+  let errorCount = 0;
+  
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-
-    // Simple CSV parsing (can be improved for quoted fields)
-    const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+    
+    // Simple split - your samples don't show quoted fields
+    const values = line.split(',').map(v => v.trim());
     
     if (values.length !== headers.length) {
-      console.warn(`Line ${i+1} has ${values.length} values, expected ${headers.length}: ${line}`);
-      continue;
+      console.warn(`parseCSV: Line ${i} mismatch. Expected ${headers.length} cols, got ${values.length}: "${line.substring(0, 50)}..."`);
+      errorCount++;
+      // Try to continue anyway, using available values
     }
-
+    
     const obj = {};
     headers.forEach((header, idx) => {
-      obj[header] = values[idx];
+      obj[header] = values[idx] || '';
     });
+    
     result.push(obj);
   }
-
-  console.log(`Parsed ${result.length} rows from CSV`);
+  
+  console.log(`parseCSV: Successfully parsed ${result.length} rows, ${errorCount} errors`);
+  
   if (result.length > 0) {
-    console.log('First row sample:', result[0]);
+    console.log('parseCSV: Sample first row:', JSON.stringify(result[0], null, 2));
   }
   
   return result;
