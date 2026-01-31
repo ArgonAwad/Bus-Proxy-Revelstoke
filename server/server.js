@@ -1040,6 +1040,399 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ==================== VIRTUAL VEHICLE MOVEMENT DEBUGGING ====================
+
+// 1. Check virtual vehicle creation and metadata
+app.get('/api/debug/virtual-creation', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const allVirtuals = req.query.all_virtuals === 'true';
+    
+    // Get trip updates to create virtuals from
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    if (!tripResult.success || !tripResult.data?.entity) {
+      return res.json({ error: 'No trip updates' });
+    }
+    
+    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data.entity || []);
+    
+    // Load schedule data
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Test creating a virtual vehicle
+    const sampleTripUpdate = processedTrips[0];
+    if (!sampleTripUpdate?.tripUpdate) {
+      return res.json({ error: 'No trip updates available' });
+    }
+    
+    const trip = sampleTripUpdate.tripUpdate.trip;
+    const stopTimeUpdates = sampleTripUpdate.tripUpdate.stopTimeUpdate || [];
+    
+    console.log('Creating test virtual vehicle for trip:', trip.tripId);
+    
+    // Create virtual vehicle
+    const virtualEntity = virtualVehicleManager.createVirtualVehicle(
+      trip,
+      stopTimeUpdates,
+      scheduleData,
+      'TEST-VIRTUAL-1',
+      'Test'
+    );
+    
+    if (!virtualEntity) {
+      return res.json({ error: 'createVirtualVehicle returned null' });
+    }
+    
+    // Check what metadata was added
+    const hasMetadata = !!virtualEntity._metadata;
+    const metadata = virtualEntity._metadata || {};
+    
+    // Check if shape progress is tracked
+    const hasProgress = 'progress' in metadata;
+    const hasShapeId = 'shapeId' in metadata;
+    
+    res.json({
+      virtual_created: true,
+      vehicle_id: virtualEntity.id,
+      trip_info: {
+        trip_id: trip.tripId,
+        route_id: trip.routeId,
+        block_id: trip.blockId,
+        shape_id: trip.shapeId
+      },
+      metadata: {
+        exists: hasMetadata,
+        values: metadata,
+        has_progress: hasProgress,
+        has_shape_id: hasShapeId,
+        progress_value: metadata.progress,
+        shape_id_value: metadata.shapeId
+      },
+      position: virtualEntity.vehicle?.position,
+      shape_data: metadata.shapeId ? {
+        exists: !!scheduleData.shapes?.[metadata.shapeId],
+        point_count: scheduleData.shapes?.[metadata.shapeId]?.length || 0
+      } : null,
+      update_methods: {
+        has_updateVehiclePosition: typeof virtualVehicleManager.updateVehiclePosition === 'function',
+        has_updateVirtualPositions: typeof virtualVehicleManager.updateVirtualPositions === 'function'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Virtual creation debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Test virtual vehicle movement updates
+app.get('/api/debug/virtual-movement-test', async (req, res) => {
+  try {
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Find a trip with a shape
+    const trips = Object.entries(scheduleData.tripsMap || {});
+    const tripWithShape = trips.find(([id, trip]) => trip.shape_id);
+    
+    if (!tripWithShape) {
+      return res.json({ error: 'No trips with shapes found' });
+    }
+    
+    const [tripId, trip] = tripWithShape;
+    const shapeId = trip.shape_id;
+    const shapePoints = scheduleData.shapes?.[shapeId];
+    
+    if (!shapePoints || shapePoints.length === 0) {
+      return res.json({ error: 'Shape has no points', shape_id: shapeId });
+    }
+    
+    console.log(`Testing movement on shape ${shapeId} with ${shapePoints.length} points`);
+    
+    // Create a test virtual vehicle with metadata
+    const testVehicle = {
+      id: 'MOVEMENT-TEST-1',
+      vehicle: {
+        trip: {
+          tripId: tripId,
+          routeId: trip.route_id,
+          blockId: trip.block_id || 'TEST-BLOCK'
+        },
+        vehicle: {
+          id: 'MOVEMENT-TEST-1',
+          label: 'Movement Test Bus',
+          licensePlate: '',
+          wheelchairAccessible: 0
+        },
+        position: {
+          latitude: shapePoints[0].lat,
+          longitude: shapePoints[0].lon,
+          bearing: 0,
+          speed: 5.0 // Moving at 5 m/s
+        },
+        timestamp: Math.floor(Date.now() / 1000),
+        currentStatus: 'IN_TRANSIT_TO'
+      },
+      _metadata: {
+        shapeId: shapeId,
+        progress: 0, // Start at beginning
+        lastUpdate: Date.now(),
+        speedMultiplier: 1.0,
+        totalShapePoints: shapePoints.length
+      }
+    };
+    
+    // Store for testing
+    if (!virtualVehicleManager.virtualVehicles) {
+      virtualVehicleManager.virtualVehicles = {};
+    }
+    virtualVehicleManager.virtualVehicles['MOVEMENT-TEST-1'] = testVehicle;
+    
+    // Test the updateVehiclePosition method
+    const positions = [];
+    
+    if (typeof virtualVehicleManager.updateVehiclePosition === 'function') {
+      // Record initial position
+      positions.push({
+        step: 0,
+        progress: testVehicle._metadata.progress,
+        position: { ...testVehicle.vehicle.position },
+        point_index: Math.floor(testVehicle._metadata.progress * shapePoints.length)
+      });
+      
+      // Update multiple times to simulate movement
+      for (let i = 1; i <= 5; i++) {
+        // Increase progress (simulate time passing)
+        testVehicle._metadata.progress += 0.1; // Move 10% each step
+        if (testVehicle._metadata.progress > 1.0) {
+          testVehicle._metadata.progress = 1.0;
+        }
+        
+        // Update position
+        virtualVehicleManager.updateVehiclePosition(testVehicle, scheduleData);
+        
+        // Record new position
+        positions.push({
+          step: i,
+          progress: testVehicle._metadata.progress,
+          position: { ...testVehicle.vehicle.position },
+          point_index: Math.floor(testVehicle._metadata.progress * (shapePoints.length - 1)),
+          shape_point_at_index: shapePoints[Math.floor(testVehicle._metadata.progress * (shapePoints.length - 1))]
+        });
+        
+        // Add small delay between updates
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } else {
+      // Manual calculation if method doesn't exist
+      positions.push({
+        note: 'updateVehiclePosition method not found, using manual calculation',
+        shape_length: shapePoints.length
+      });
+    }
+    
+    res.json({
+      test_vehicle: {
+        id: testVehicle.id,
+        shape_id: shapeId,
+        total_shape_points: shapePoints.length,
+        initial_progress: 0,
+        final_progress: testVehicle._metadata.progress
+      },
+      movement_test: {
+        positions: positions,
+        shape_info: {
+          id: shapeId,
+          total_points: shapePoints.length,
+          first_point: shapePoints[0],
+          midpoint: shapePoints[Math.floor(shapePoints.length / 2)],
+          last_point: shapePoints[shapePoints.length - 1]
+        }
+      },
+      analysis: positions.length > 1 ? 
+        `Movement tested: ${positions.length - 1} updates applied` :
+        'No movement updates applied'
+    });
+    
+  } catch (error) {
+    console.error('Movement test error:', error);
+    res.status(500).json({ error: error.message, stack: error.stack });
+  }
+});
+
+// 3. Check virtual vehicle manager implementation
+app.get('/api/debug/virtual-manager', (req, res) => {
+  try {
+    const manager = virtualVehicleManager;
+    
+    // Check all methods and properties
+    const managerAnalysis = {
+      constructor_name: manager.constructor.name,
+      current_mode: manager.currentMode,
+      has_virtual_vehicles: !!manager.virtualVehicles,
+      virtual_vehicles_count: manager.virtualVehicles ? Object.keys(manager.virtualVehicles).length : 0,
+      virtual_vehicles_sample: manager.virtualVehicles ? 
+        Object.keys(manager.virtualVehicles).slice(0, 3) : [],
+      
+      // Check methods
+      methods: {
+        createVirtualVehicle: typeof manager.createVirtualVehicle,
+        updateVehiclePosition: typeof manager.updateVehiclePosition,
+        updateVirtualPositions: typeof manager.updateVirtualPositions,
+        generateSubstituteVirtualVehicles: typeof manager.generateSubstituteVirtualVehicles,
+        generateAllVirtualVehicles: typeof manager.generateAllVirtualVehicles,
+        setMode: typeof manager.setMode,
+        clearAllVirtuals: typeof manager.clearAllVirtuals
+      },
+      
+      // Check if virtual vehicles have metadata
+      sample_vehicle_metadata: (() => {
+        if (!manager.virtualVehicles || Object.keys(manager.virtualVehicles).length === 0) {
+          return 'No virtual vehicles';
+        }
+        const firstKey = Object.keys(manager.virtualVehicles)[0];
+        const firstVehicle = manager.virtualVehicles[firstKey];
+        return {
+          vehicle_id: firstKey,
+          has_metadata: !!firstVehicle._metadata,
+          metadata: firstVehicle._metadata,
+          has_position: !!firstVehicle.vehicle?.position,
+          position: firstVehicle.vehicle?.position
+        };
+      })()
+    };
+    
+    // Check virtual updater
+    const updaterAnalysis = virtualUpdater ? {
+      exists: true,
+      isRunning: virtualUpdater.isRunning,
+      updateInterval: virtualUpdater.updateInterval,
+      lastUpdate: virtualUpdater.lastUpdate,
+      hasStart: typeof virtualUpdater.start === 'function',
+      hasStop: typeof virtualUpdater.stop === 'function',
+      hasRefresh: typeof virtualUpdater.refresh === 'function'
+    } : { exists: false };
+    
+    res.json({
+      virtual_vehicle_manager: managerAnalysis,
+      virtual_updater: updaterAnalysis,
+      summary: {
+        system_ready: managerAnalysis.methods.updateVehiclePosition === 'function',
+        movement_possible: managerAnalysis.methods.updateVehiclePosition === 'function' && 
+                          updaterAnalysis.exists && 
+                          updaterAnalysis.isRunning,
+        needs_fix: managerAnalysis.methods.updateVehiclePosition !== 'function' ? 
+          'updateVehiclePosition method missing or not a function' : 
+          'Check implementation of updateVehiclePosition'
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. Fix: Add a manual movement endpoint to test
+app.get('/api/debug/manual-move-virtuals', async (req, res) => {
+  try {
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Get all virtual vehicles
+    const virtuals = virtualVehicleManager.virtualVehicles || {};
+    const virtualIds = Object.keys(virtuals);
+    
+    if (virtualIds.length === 0) {
+      return res.json({ error: 'No virtual vehicles found' });
+    }
+    
+    console.log(`Moving ${virtualIds.length} virtual vehicles...`);
+    
+    const movementResults = [];
+    
+    for (const vehicleId of virtualIds.slice(0, 10)) { // Limit to 10
+      const vehicle = virtuals[vehicleId];
+      
+      if (!vehicle._metadata) {
+        vehicle._metadata = {
+          progress: 0,
+          lastUpdate: Date.now(),
+          speedMultiplier: 1.0
+        };
+      }
+      
+      const beforeProgress = vehicle._metadata.progress || 0;
+      const beforePosition = vehicle.vehicle?.position ? { ...vehicle.vehicle.position } : null;
+      
+      // Increase progress (simulate movement)
+      if (vehicle._metadata.progress === undefined) {
+        vehicle._metadata.progress = 0.1; // Start at 10% if undefined
+      } else {
+        vehicle._metadata.progress += 0.05; // Move 5% each update
+      }
+      
+      // Cap at 100%
+      if (vehicle._metadata.progress > 1.0) {
+        vehicle._metadata.progress = 1.0;
+      }
+      
+      // Try to update position using manager method
+      if (typeof virtualVehicleManager.updateVehiclePosition === 'function') {
+        virtualVehicleManager.updateVehiclePosition(vehicle, scheduleData);
+      } else {
+        // Manual update if method doesn't exist
+        const shapeId = vehicle._metadata.shapeId;
+        if (shapeId && scheduleData.shapes?.[shapeId]) {
+          const shapePoints = scheduleData.shapes[shapeId];
+          const pointIndex = Math.floor(vehicle._metadata.progress * (shapePoints.length - 1));
+          const targetPoint = shapePoints[pointIndex] || shapePoints[0];
+          
+          if (vehicle.vehicle.position) {
+            vehicle.vehicle.position.latitude = targetPoint.lat;
+            vehicle.vehicle.position.longitude = targetPoint.lon;
+            vehicle.vehicle.position.bearing = vehicle._metadata.progress * 360; // Fake bearing
+            vehicle.vehicle.position.speed = 5.0; // 5 m/s
+          }
+        }
+      }
+      
+      vehicle.vehicle.timestamp = Math.floor(Date.now() / 1000);
+      vehicle._metadata.lastUpdate = Date.now();
+      
+      movementResults.push({
+        vehicle_id: vehicleId,
+        before: {
+          progress: beforeProgress,
+          position: beforePosition
+        },
+        after: {
+          progress: vehicle._metadata.progress,
+          position: vehicle.vehicle?.position,
+          timestamp: vehicle.vehicle?.timestamp
+        },
+        moved: beforeProgress !== vehicle._metadata.progress
+      });
+    }
+    
+    res.json({
+      moved_vehicles: movementResults.length,
+      results: movementResults,
+      note: 'Virtual vehicles manually moved. Refresh /api/virtuals to see new positions.'
+    });
+    
+  } catch (error) {
+    console.error('Manual move error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 6. Keep this one shape endpoint (it's useful)
 app.get('/api/shapes', async (req, res) => {
   try {
