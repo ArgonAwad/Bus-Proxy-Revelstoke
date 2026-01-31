@@ -148,34 +148,51 @@ class ScheduleLoader {
   }
 
   // Helper to parse a single CSV line with quoted fields
-  parseCSVLine(line) {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
+  parseCSV(csvString) {
+  if (!csvString.trim()) {
+    console.warn('Empty CSV string provided');
+    return [];
+  }
+  
+  const lines = csvString.split(/\r?\n/);
+  console.log(`Parsing CSV with ${lines.length} lines`);
+  
+  if (lines.length < 2) {
+    console.warn('CSV has no data rows');
+    return [];
+  }
 
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
+  // Clean up headers
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
+  console.log(`CSV headers (${headers.length}):`, headers);
 
-      if (char === '"' && !inQuotes) {
-        inQuotes = true;
-      } else if (char === '"' && inQuotes) {
-        if (i + 1 < line.length && line[i + 1] === '"') {
-          current += '"';
-          i++; // skip the next quote
-        } else {
-          inQuotes = false;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current);
-        current = '';
-      } else {
-        current += char;
-      }
+  const result = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // Simple CSV parsing (can be improved for quoted fields)
+    const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+    
+    if (values.length !== headers.length) {
+      console.warn(`Line ${i+1} has ${values.length} values, expected ${headers.length}: ${line}`);
+      continue;
     }
 
-    if (current) result.push(current);
-    return result;
+    const obj = {};
+    headers.forEach((header, idx) => {
+      obj[header] = values[idx];
+    });
+    result.push(obj);
   }
+
+  console.log(`Parsed ${result.length} rows from CSV`);
+  if (result.length > 0) {
+    console.log('First row sample:', result[0]);
+  }
+  
+  return result;
+}
 
   // ────────────────────────────────────────────────
   // Map-building methods
@@ -198,33 +215,65 @@ class ScheduleLoader {
   }
 
   createStopsMap(stopsArray) {
-    const map = {};
-    let validCount = 0;
-
-    stopsArray.forEach(stop => {
-      const id = String(stop.stop_id).trim();
-      const lat = parseFloat(stop.stop_lat);
-      const lon = parseFloat(stop.stop_lon);
-
-      if (!isNaN(lat) && !isNaN(lon) && id) {
-        map[id] = {
-          lat,
-          lon,
-          name: stop.stop_name?.trim() || 'Unnamed Stop'
-        };
-        validCount++;
-      } else {
-        console.warn(`Invalid stop skipped: id=${stop.stop_id}, lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
-      }
-    });
-
-    console.log(`[Stops] Loaded ${validCount} valid stops out of ${stopsArray.length} rows`);
-    console.log(`[Stops] Sample keys (first 5): ${Object.keys(map).slice(0,5).join(', ')}`);
-    console.log(`[Stops] Has 156087? ${!!map['156087']}`);
-    console.log(`[Stops] Has 156083? ${!!map['156083']}`);
-
-    return map;
+  console.log('🔍 createStopsMap called with', stopsArray.length, 'stops');
+  
+  if (stopsArray.length === 0) {
+    console.error('❌ No stops data provided to createStopsMap!');
+    return {};
   }
+  
+  const map = {};
+  let validCount = 0;
+  let invalidCount = 0;
+
+  // Log the first stop to see its structure
+  console.log('First stop object:', stopsArray[0]);
+  console.log('First stop keys:', Object.keys(stopsArray[0]));
+
+  stopsArray.forEach((stop, index) => {
+    // Try to extract stop ID - handle different possible field names
+    const stopId = stop.stop_id || stop.stop_id || stop.id || stop.stopId;
+    const stopLat = stop.stop_lat || stop.lat || stop.latitude;
+    const stopLon = stop.stop_lon || stop.lon || stop.longitude;
+    
+    if (!stopId) {
+      console.warn(`Stop at index ${index} has no ID:`, stop);
+      invalidCount++;
+      return;
+    }
+    
+    const id = String(stopId).trim();
+    const lat = parseFloat(stopLat);
+    const lon = parseFloat(stopLon);
+
+    if (!isNaN(lat) && !isNaN(lon) && id) {
+      map[id] = {
+        lat,
+        lon,
+        name: stop.stop_name?.trim() || stop.name?.trim() || 'Unnamed Stop'
+      };
+      validCount++;
+      
+      // Log a few samples
+      if (validCount <= 3) {
+        console.log(`✅ Added stop ${id}: ${map[id].lat}, ${map[id].lon} - "${map[id].name}"`);
+      }
+    } else {
+      console.warn(`Invalid stop skipped: id=${id}, lat=${stopLat}, lon=${stopLon}`);
+      invalidCount++;
+    }
+  });
+
+  console.log(`[Stops] Loaded ${validCount} valid stops, ${invalidCount} invalid`);
+  console.log(`[Stops] Sample keys:`, Object.keys(map).slice(0, 5));
+  
+  // Check for specific stops we know should exist
+  ['156087', '156011', '156083'].forEach(testId => {
+    console.log(`Looking for stop ${testId}:`, map[testId] ? 'FOUND' : 'NOT FOUND');
+  });
+
+  return map;
+}
 
   createStopTimesByTrip(stopTimesArray) {
     const byTrip = {};
