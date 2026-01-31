@@ -74,51 +74,56 @@ class VirtualVehicleManager {
     return virtualVehicles;
   }
 
-  // MODE 2: Only virtual buses for missing real buses
-  generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds) {
-    const virtualVehicles = [];
-    if (!tripUpdates || !tripUpdates.entity) return virtualVehicles;
+  // MODE 2: Substitute (missing) or All scheduled
+generateSubstituteVirtualVehicles(tripUpdates, scheduleData, realVehicleIds, allVirtuals = false) {
+  const virtualVehicles = [];
+  if (!tripUpdates || !tripUpdates.entity) return virtualVehicles;
 
-    const currentTimeSec = Math.floor(Date.now() / 1000);
-    const createdTrips = new Set(); // NEW: prevent duplicates within this generation
+  const currentTimeSec = Math.floor(Date.now() / 1000);
+  const createdTrips = new Set();
 
-    tripUpdates.entity.forEach((tripUpdate) => {
-      if (!tripUpdate.tripUpdate) return;
+  tripUpdates.entity.forEach((tripUpdate) => {
+    if (!tripUpdate.tripUpdate) return;
+    const trip = tripUpdate.tripUpdate.trip;
+    const vehicle = tripUpdate.tripUpdate.vehicle;
+    const stopTimes = tripUpdate.tripUpdate.stopTimeUpdate || [];
 
-      const trip = tripUpdate.tripUpdate.trip;
-      const vehicle = tripUpdate.tripUpdate.vehicle;
-      const stopTimes = tripUpdate.tripUpdate.stopTimeUpdate || [];
+    if (!trip || !trip.tripId || stopTimes.length === 0) return;
 
-      if (!trip || !trip.tripId || stopTimes.length === 0) return;
+    if (this.isTripCurrentlyActive(stopTimes, currentTimeSec)) {
+      const hasRealVehicle = vehicle && vehicle.id && vehicle.id !== '';
+      const tripId = trip.tripId;
+      const vehicleId = vehicle?.id || tripId;
 
-      if (this.isTripCurrentlyActive(stopTimes, currentTimeSec)) {
-        const hasRealVehicle = vehicle && vehicle.id && vehicle.id !== '';
-        const tripId = trip.tripId;
-        const vehicleId = vehicle?.id || tripId;
+      // === CHANGE HERE ===
+      let shouldGenerate = false;
 
+      if (allVirtuals) {
+        // All scheduled mode: generate regardless of real vehicle
+        shouldGenerate = !createdTrips.has(tripId);
+      } else {
+        // Normal substitute mode: only if missing real vehicle
         const isTracked = realVehicleIds.has(vehicleId) || realVehicleIds.has(tripId);
-
-        if (!hasRealVehicle && !isTracked && !createdTrips.has(tripId)) {
-          createdTrips.add(tripId); // Mark as created to avoid dupes
-          const virtualVehicle = this.createVirtualVehicle(
-            trip,
-            stopTimes,
-            scheduleData,
-            `VSUB${virtualVehicles.length + 1}`,
-            'Substitute'
-          );
-          if (virtualVehicle) virtualVehicles.push(virtualVehicle);
-        } else if (createdTrips.has(tripId)) {
-          console.log(`Skipped duplicate virtual for already created trip ${tripId}`);
-        } else {
-          console.log(`Skipped virtual for tracked trip ${tripId}`);
-        }
+        shouldGenerate = !hasRealVehicle && !isTracked && !createdTrips.has(tripId);
       }
-    });
 
-    console.log(`👻 SUBS ONLY mode: ${virtualVehicles.length} substitute buses created`);
-    return virtualVehicles;
-  }
+      if (shouldGenerate) {
+        createdTrips.add(tripId);
+        const virtualVehicle = this.createVirtualVehicle(
+          trip,
+          stopTimes,
+          scheduleData,
+          `VIRT-${allVirtuals ? 'ALL-' : ''}${extractBlockIdFromTripId(tripId) || 'unknown'}`,
+          allVirtuals ? 'AllScheduled' : 'Substitute'
+        );
+        if (virtualVehicle) virtualVehicles.push(virtualVehicle);
+      }
+    }
+  });
+
+  console.log(`👻 ${allVirtuals ? 'ALL SCHEDULED' : 'SUBS ONLY'} mode: ${virtualVehicles.length} virtual buses created`);
+  return virtualVehicles;
+}
 
   isTripCurrentlyActive(stopTimes, currentTimeSec) {
     if (stopTimes.length === 0) return false;
