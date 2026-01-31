@@ -14,6 +14,8 @@ class VirtualVehicleManager {
     this.currentMode = this.MODE.SUBS_ONLY; // Default mode
     
     this.scheduleData = null;
+    
+    console.log('✅ VirtualVehicleManager initialized');
   }
 
   // Set schedule data (called from server.js)
@@ -56,6 +58,52 @@ class VirtualVehicleManager {
         return lastPart;
       }
     }
+    return null;
+  }
+
+  // Helper: Get shape ID from trip ID
+  getShapeIdFromTrip(tripId, scheduleData) {
+    if (!tripId || !scheduleData?.tripsMap) return null;
+    
+    console.log(`🔍 Looking for shape ID for trip: ${tripId}`);
+    
+    // Try exact match first
+    if (scheduleData.tripsMap[tripId]) {
+      const shapeId = scheduleData.tripsMap[tripId].shape_id;
+      console.log(`✅ Found shape ID via exact match: ${shapeId}`);
+      return shapeId;
+    }
+    
+    // Try extracting numeric part (after last colon)
+    const parts = tripId.split(':');
+    if (parts.length >= 2) {
+      const lastPart = parts[parts.length - 1];
+      // Try matching trip_id from trips.txt (usually numeric)
+      const tripKey = Object.keys(scheduleData.tripsMap).find(key => 
+        key === lastPart || key.includes(lastPart)
+      );
+      
+      if (tripKey && scheduleData.tripsMap[tripKey].shape_id) {
+        const shapeId = scheduleData.tripsMap[tripKey].shape_id;
+        console.log(`✅ Found shape ID via partial match: ${shapeId}`);
+        return shapeId;
+      }
+    }
+    
+    // Try finding any trip with this block ID
+    const blockId = this.extractBlockIdFromTripId(tripId);
+    if (blockId) {
+      const tripWithBlock = Object.values(scheduleData.tripsMap).find(trip => 
+        trip.block_id === blockId && trip.shape_id
+      );
+      
+      if (tripWithBlock) {
+        console.log(`✅ Found shape ID via block match: ${tripWithBlock.shape_id}`);
+        return tripWithBlock.shape_id;
+      }
+    }
+    
+    console.log(`❌ No shape ID found for trip ${tripId}`);
     return null;
   }
 
@@ -241,6 +289,9 @@ class VirtualVehicleManager {
     const routeDisplay = this.getRouteDisplayName(trip.routeId);
     const labelPrefix = modeType === 'All Virtual' ? 'Virtual' : 'Ghost';
     
+    // Get shape ID for this trip
+    const shapeId = this.getShapeIdFromTrip(trip.tripId, scheduleData);
+    
     const virtualVehicle = {
       id: vehicleId,
       isDeleted: false,
@@ -253,7 +304,8 @@ class VirtualVehicleManager {
           scheduleRelationship: 0,
           routeId: trip.routeId,
           directionId: trip.directionId || 0,
-          modifiedTrip: null
+          modifiedTrip: null,
+          blockId: this.extractBlockIdFromTripId(trip.tripId) || 'unknown'
         },
         position: {
           latitude: position.latitude,
@@ -289,10 +341,31 @@ class VirtualVehicleManager {
       stopTimes: stopTimes,
       currentStop: currentStop,
       nextStop: nextStop,
-      modeType: modeType
+      modeType: modeType,
+      
+      // CRITICAL: Add metadata for movement tracking
+      _metadata: {
+        progress: progress,
+        shapeId: shapeId,
+        lastUpdate: Date.now(),
+        startTime: currentTimeSec,
+        stopTimes: stopTimes,
+        currentStop: currentStop,
+        nextStop: nextStop,
+        currentStopInfo: currentStopInfo,
+        positionHistory: [{
+          lat: position.latitude,
+          lng: position.longitude,
+          time: currentTimeSec
+        }]
+      }
     };
     
-    console.log(`✅ Created virtual vehicle ${vehicleId} at ${position.latitude}, ${position.longitude}`);
+    // STORE THE VEHICLE IN THE MANAGER'S MAP
+    this.virtualVehicles.set(vehicleId, virtualVehicle);
+    console.log(`✅ Created and stored virtual vehicle ${vehicleId} at ${position.latitude}, ${position.longitude}`);
+    console.log(`   Shape ID: ${shapeId || 'none'}, Progress: ${progress}`);
+    
     return virtualVehicle;
   }
 
@@ -576,60 +649,63 @@ class VirtualVehicleManager {
     return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
   }
 
-  updateVirtualPositions(scheduleData) {
-    const now = Date.now();
-    let updatedCount = 0;
-    
-    for (const [tripId, vehicle] of this.virtualVehicles) {
-      const age = now - vehicle.lastUpdated;
-      if (age > 30000) { // update every 30 seconds
-        this.updateVehiclePosition(vehicle, scheduleData);
-        vehicle.lastUpdated = now;
-        updatedCount++;
-      }
-    }
-    
-    return updatedCount;
-  }
-
   updateVehiclePosition(vehicle, scheduleData) {
-    if (!vehicle.stopTimes || vehicle.stopTimes.length === 0) {
-      console.log(`Removing virtual ${vehicle.id} - no stop times`);
-      this.virtualVehicles.delete(vehicle.id);
+    if (!vehicle) {
+      console.log('❌ updateVehiclePosition: No vehicle provided');
       return;
     }
     
+    console.log(`\n🔄 Updating position for virtual vehicle ${vehicle.id}`);
+    
+    // Get metadata - check both possible locations
+    const metadata = vehicle._metadata || 
+                     (vehicle.vehicle && vehicle.vehicle._metadata) || 
+                     {};
+    
+    if (!metadata.stopTimes && !vehicle.stopTimes) {
+      console.log(`❌ No stop times for vehicle ${vehicle.id}`);
+      return;
+    }
+    
+    const stopTimes = metadata.stopTimes || vehicle.stopTimes;
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    const currentStopInfo = this.findCurrentStopAndProgress(vehicle.stopTimes, currentTimeSec);
+    
+    console.log(`   Current time: ${currentTimeSec}, Last update: ${metadata.lastUpdate || 'never'}`);
+    
+    // Find current progress based on time
+    const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
     
     if (!currentStopInfo) {
-      console.log(`Removing virtual ${vehicle.id} - no active stop segment`);
-      this.virtualVehicles.delete(vehicle.id);
+      console.log(`❌ Could not find current stop info for ${vehicle.id}`);
+      
+      // If trip has likely ended, remove it
+      const lastStopTime = stopTimes[stopTimes.length - 1];
+      const lastTime = lastStopTime.departure?.time || lastStopTime.arrival?.time;
+      
+      if (lastTime && currentTimeSec > parseInt(lastTime) + 1800) { // 30 min after end
+        console.log(`🗑️ Removing completed virtual vehicle ${vehicle.id}`);
+        this.virtualVehicles.delete(vehicle.id);
+      }
       return;
     }
     
     const { currentStop, nextStop, progress } = currentStopInfo;
-
-    // Check if the trip has ended
-    if (!nextStop) {
-      const lastStop = vehicle.stopTimes[vehicle.stopTimes.length - 1];
-      const lastArrivalTime = lastStop.arrival?.time || lastStop.departure?.time || 0;
-      const bufferSeconds = 600; // 10 min buffer
-      
-      if (currentTimeSec > lastArrivalTime + bufferSeconds) {
-        console.log(`Removing completed virtual bus ${vehicle.id} (ended at ${lastArrivalTime})`);
-        this.virtualVehicles.delete(vehicle.id);
-        return;
-      }
+    
+    console.log(`   New progress: ${progress.toFixed(3)}, Current stop: ${currentStop.stopId}`);
+    
+    // Update metadata
+    metadata.progress = progress;
+    metadata.currentStop = currentStop;
+    metadata.nextStop = nextStop;
+    metadata.lastUpdate = Date.now();
+    metadata.currentStopInfo = currentStopInfo;
+    
+    // Store metadata back in the right place
+    if (!vehicle._metadata) {
+      vehicle._metadata = metadata;
     }
-
-    // Normal update
-    vehicle.vehicle.currentStopSequence = currentStop.stopSequence || 1;
-    vehicle.vehicle.stopId = currentStop.stopId;
-    vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
-    vehicle.vehicle.timestamp = currentTimeSec;
-    vehicle.vehicle.progress = progress;
-
+    
+    // Calculate new position
     const position = this.calculateCurrentPosition(
       currentStop,
       nextStop,
@@ -637,16 +713,104 @@ class VirtualVehicleManager {
       scheduleData,
       vehicle.vehicle.trip.tripId
     );
-
-    vehicle.vehicle.position.latitude = position.latitude;
-    vehicle.vehicle.position.longitude = position.longitude;
-    vehicle.vehicle.position.bearing = position.bearing;
-    vehicle.vehicle.position.speed = position.speed;
-
-    vehicle.currentStop = currentStop;
-    vehicle.nextStop = nextStop;
     
-    console.log(`🔄 Updated virtual ${vehicle.id} position to ${position.latitude}, ${position.longitude}`);
+    console.log(`   New position: ${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}`);
+    
+    // Update vehicle position
+    if (vehicle.vehicle && vehicle.vehicle.position) {
+      vehicle.vehicle.position.latitude = position.latitude;
+      vehicle.vehicle.position.longitude = position.longitude;
+      vehicle.vehicle.position.bearing = position.bearing;
+      vehicle.vehicle.position.speed = position.speed;
+    }
+    
+    // Update other vehicle properties
+    if (vehicle.vehicle) {
+      vehicle.vehicle.timestamp = currentTimeSec;
+      vehicle.vehicle.currentStatus = progress === 0 ? 1 : 2;
+      vehicle.vehicle.stopId = currentStop.stopId;
+      vehicle.vehicle.currentStopSequence = currentStop.stopSequence || 1;
+      vehicle.vehicle.progress = progress;
+    }
+    
+    vehicle.lastUpdated = Date.now();
+    
+    // Add to position history
+    if (!metadata.positionHistory) {
+      metadata.positionHistory = [];
+    }
+    metadata.positionHistory.push({
+      lat: position.latitude,
+      lng: position.longitude,
+      time: currentTimeSec,
+      progress: progress
+    });
+    
+    // Keep only last 10 positions
+    if (metadata.positionHistory.length > 10) {
+      metadata.positionHistory = metadata.positionHistory.slice(-10);
+    }
+    
+    console.log(`✅ Updated ${vehicle.id} to progress: ${progress.toFixed(3)}, bearing: ${position.bearing}°`);
+  }
+
+  updateVirtualPositions(scheduleData) {
+    const now = Date.now();
+    let updatedCount = 0;
+    let removedCount = 0;
+    
+    console.log(`\n📊 Updating virtual positions (${this.virtualVehicles.size} vehicles total)`);
+    
+    // Create array copy to avoid modification during iteration issues
+    const vehicles = Array.from(this.virtualVehicles.entries());
+    
+    for (const [vehicleId, vehicle] of vehicles) {
+      try {
+        const age = now - (vehicle.lastUpdated || 0);
+        
+        // Update every 5 seconds (more frequent for smoother movement)
+        if (age > 5000) {
+          this.updateVehiclePosition(vehicle, scheduleData);
+          
+          // Update the stored vehicle
+          this.virtualVehicles.set(vehicleId, vehicle);
+          updatedCount++;
+        }
+        
+        // Check if vehicle should be removed (trip ended + buffer)
+        const metadata = vehicle._metadata || {};
+        if (metadata.stopTimes) {
+          const lastStop = metadata.stopTimes[metadata.stopTimes.length - 1];
+          const lastTime = lastStop.departure?.time || lastStop.arrival?.time;
+          const currentTimeSec = Math.floor(Date.now() / 1000);
+          
+          if (lastTime && currentTimeSec > parseInt(lastTime) + 1800) { // 30 min after end
+            console.log(`🗑️ Removing expired virtual vehicle ${vehicleId}`);
+            this.virtualVehicles.delete(vehicleId);
+            removedCount++;
+          }
+        }
+        
+      } catch (error) {
+        console.error(`❌ Error updating vehicle ${vehicleId}:`, error.message);
+      }
+    }
+    
+    // Cleanup old vehicles (60 minutes)
+    const cutoff = Date.now() - (60 * 60 * 1000);
+    for (const [vehicleId, vehicle] of this.virtualVehicles.entries()) {
+      if ((vehicle.lastUpdated || 0) < cutoff) {
+        console.log(`🗑️ Removing stale virtual vehicle ${vehicleId}`);
+        this.virtualVehicles.delete(vehicleId);
+        removedCount++;
+      }
+    }
+    
+    if (updatedCount > 0 || removedCount > 0) {
+      console.log(`📈 Virtual update complete: ${updatedCount} updated, ${removedCount} removed, ${this.virtualVehicles.size} remaining`);
+    }
+    
+    return { updated: updatedCount, removed: removedCount };
   }
 
   cleanupOldVehicles(maxAgeMinutes = 60) {
@@ -667,6 +831,44 @@ class VirtualVehicleManager {
     }
     
     return removed;
+  }
+
+  // Add this method to manually trigger updates (for debugging)
+  forceUpdateAllVirtuals(scheduleData) {
+    console.log(`🚀 Force updating all ${this.virtualVehicles.size} virtual vehicles`);
+    
+    const results = {
+      updated: 0,
+      errors: 0,
+      details: []
+    };
+    
+    for (const [vehicleId, vehicle] of this.virtualVehicles.entries()) {
+      try {
+        console.log(`\n🔄 Force updating ${vehicleId}...`);
+        const beforeProgress = vehicle._metadata?.progress || 0;
+        
+        this.updateVehiclePosition(vehicle, scheduleData);
+        
+        const afterProgress = vehicle._metadata?.progress || 0;
+        
+        results.details.push({
+          vehicleId,
+          beforeProgress,
+          afterProgress,
+          moved: Math.abs(afterProgress - beforeProgress) > 0.001
+        });
+        
+        results.updated++;
+        
+      } catch (error) {
+        console.error(`❌ Error force updating ${vehicleId}:`, error.message);
+        results.errors++;
+      }
+    }
+    
+    console.log(`📊 Force update complete: ${results.updated} updated, ${results.errors} errors`);
+    return results;
   }
 }
 
