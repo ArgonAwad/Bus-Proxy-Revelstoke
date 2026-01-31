@@ -540,6 +540,94 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== ESSENTIAL DEBUGGING ENDPOINTS ====================
+// Add this endpoint to trace the data flow
+app.get('/api/debug/data-flow', async (req, res) => {
+  try {
+    console.log('=== DATA FLOW TRACE ===');
+    
+    // Trace 1: Direct from scheduleLoader
+    const directData = scheduleLoader.scheduleData;
+    console.log('1. Direct from scheduleLoader:');
+    console.log('  - Has data?', !!directData);
+    console.log('  - Keys:', directData ? Object.keys(directData) : []);
+    
+    // Trace 2: After calling loadSchedules
+    console.log('2. Calling loadSchedules()...');
+    const loadedData = await scheduleLoader.loadSchedules();
+    console.log('  - Returned:', typeof loadedData);
+    console.log('  - Has tripsMap?', !!loadedData?.tripsMap);
+    console.log('  - Trips count:', loadedData?.tripsMap ? Object.keys(loadedData.tripsMap).length : 0);
+    
+    // Trace 3: Check if data is being mutated
+    console.log('3. Checking for mutations...');
+    const afterLoadData = scheduleLoader.scheduleData;
+    console.log('  - Same object?', directData === afterLoadData);
+    console.log('  - Still has trips?', afterLoadData?.tripsMap ? Object.keys(afterLoadData.tripsMap).length : 0);
+    
+    // Trace 4: Check what /api/health actually sees
+    console.log('4. Simulating /api/health check...');
+    const healthCheckData = scheduleLoader.scheduleData;
+    const healthCounts = healthCheckData ? {
+      trips: Object.keys(healthCheckData.tripsMap || {}).length,
+      stops: Object.keys(healthCheckData.stops || {}).length,
+      shapes: Object.keys(healthCheckData.shapes || {}).length
+    } : { trips: 0, stops: 0, shapes: 0 };
+    
+    console.log('  - Health sees:', healthCounts);
+    
+    // Trace 5: Check for any getters/setters that might be interfering
+    console.log('5. Checking property descriptors...');
+    const descriptors = {};
+    if (directData) {
+      ['tripsMap', 'stops', 'shapes'].forEach(key => {
+        const desc = Object.getOwnPropertyDescriptor(directData, key);
+        descriptors[key] = {
+          hasGetter: !!desc?.get,
+          hasSetter: !!desc?.set,
+          enumerable: desc?.enumerable,
+          configurable: desc?.configurable
+        };
+      });
+    }
+    
+    res.json({
+      trace: {
+        direct_from_loader: {
+          has_data: !!directData,
+          keys: directData ? Object.keys(directData) : [],
+          trips_count: directData?.tripsMap ? Object.keys(directData.tripsMap).length : 0,
+          stops_count: directData?.stops ? Object.keys(directData.stops).length : 0,
+          shapes_count: directData?.shapes ? Object.keys(directData.shapes).length : 0
+        },
+        after_load: {
+          returned_data_type: typeof loadedData,
+          returned_has_trips: !!loadedData?.tripsMap,
+          returned_trips_count: loadedData?.tripsMap ? Object.keys(loadedData.tripsMap).length : 0
+        },
+        comparison: {
+          same_object: directData === afterLoadData,
+          trips_same: directData?.tripsMap === afterLoadData?.tripsMap
+        },
+        health_check_simulation: healthCounts,
+        property_descriptors: descriptors
+      },
+      analysis: healthCounts.trips === 0 ? 
+        '❌ Health endpoint sees 0 trips but data exists!' :
+        '✅ Data flow looks correct',
+      possible_issues: [
+        'Data is being cleared somewhere after load',
+        'There might be a race condition',
+        'The health endpoint might be checking before data is loaded',
+        'There could be multiple instances of ScheduleLoader'
+      ]
+    });
+    
+  } catch (error) {
+    console.error('Data flow trace error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Add this diagnostic endpoint FIRST
 app.get('/api/debug/schedule-source', async (req, res) => {
   try {
