@@ -540,6 +540,50 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== ESSENTIAL DEBUGGING ENDPOINTS ====================
+// Add this endpoint to debug schedule loading
+app.get('/api/debug/schedule-status', async (req, res) => {
+  try {
+    // Force reload schedule data
+    await scheduleLoader.loadSchedules();
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Call the debug method
+    const debugInfo = virtualVehicleManager.debugScheduleData();
+    
+    // Also check what trip updates contain
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', '36');
+    const tripUpdates = tripResult.success ? tripResult.data?.entity || [] : [];
+    
+    // Extract trip IDs from updates
+    const updateTripIds = tripUpdates
+      .filter(tu => tu.tripUpdate?.trip?.tripId)
+      .map(tu => tu.tripUpdate.trip.tripId)
+      .slice(0, 5);
+    
+    res.json({
+      schedule_loading: {
+        attempted: true,
+        trips_loaded: Object.keys(scheduleData.tripsMap || {}).length,
+        stops_loaded: Object.keys(scheduleData.stops || {}).length,
+        shapes_loaded: Object.keys(scheduleData.shapes || {}).length,
+        sample_trip_ids: Object.keys(scheduleData.tripsMap || {}).slice(0, 5),
+        sample_shape_ids: Object.keys(scheduleData.shapes || {}).slice(0, 3)
+      },
+      virtual_manager: debugInfo,
+      trip_updates: {
+        count: tripUpdates.length,
+        sample_trip_ids: updateTripIds
+      },
+      analysis: Object.keys(scheduleData.tripsMap || {}).length === 0 
+        ? '❌ CRITICAL: No trips loaded! Check schedule-loader.js'
+        : '✅ Schedule data loaded'
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message, stack: error.stack });
+  }
+});
+
 // Add this endpoint to test virtual movement
 app.get('/api/debug/test-virtual-movement', async (req, res) => {
   try {
