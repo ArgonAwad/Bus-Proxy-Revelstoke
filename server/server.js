@@ -540,6 +540,115 @@ app.get('/api/trip_updates', async (req, res) => {
 });
 
 // ==================== ESSENTIAL DEBUGGING ENDPOINTS ====================
+// Add this diagnostic endpoint FIRST
+app.get('/api/debug/schedule-source', async (req, res) => {
+  try {
+    // First, let's see what ScheduleLoader actually does
+    console.log('=== SCHEDULE LOADER DIAGNOSIS ===');
+    
+    // Check the loader's structure
+    const loaderInfo = {
+      constructorName: scheduleLoader.constructor.name,
+      methods: Object.getOwnPropertyNames(Object.getPrototypeOf(scheduleLoader)),
+      properties: Object.getOwnPropertyNames(scheduleLoader),
+      hasLoadMethod: typeof scheduleLoader.loadSchedules === 'function',
+      hasScheduleData: !!scheduleLoader.scheduleData
+    };
+    
+    console.log('Loader info:', loaderInfo);
+    
+    // Try to load schedules and see what happens
+    console.log('Calling loadSchedules()...');
+    let loadResult;
+    try {
+      loadResult = await scheduleLoader.loadSchedules();
+      console.log('loadSchedules() returned:', typeof loadResult, loadResult ? 'has data' : 'null/undefined');
+    } catch (loadError) {
+      console.error('loadSchedules() error:', loadError.message);
+      loadResult = { error: loadError.message };
+    }
+    
+    // Check what's in scheduleData
+    const scheduleData = scheduleLoader.scheduleData;
+    const dataAnalysis = {
+      exists: !!scheduleData,
+      keys: scheduleData ? Object.keys(scheduleData) : [],
+      tripsMap: scheduleData?.tripsMap ? {
+        exists: true,
+        keys: Object.keys(scheduleData.tripsMap),
+        count: Object.keys(scheduleData.tripsMap).length,
+        firstKey: Object.keys(scheduleData.tripsMap)[0],
+        firstValue: scheduleData.tripsMap[Object.keys(scheduleData.tripsMap)[0]]
+      } : { exists: false },
+      stops: scheduleData?.stops ? {
+        exists: true,
+        count: Object.keys(scheduleData.stops).length
+      } : { exists: false },
+      shapes: scheduleData?.shapes ? {
+        exists: true,
+        count: Object.keys(scheduleData.shapes).length
+      } : { exists: false }
+    };
+    
+    console.log('Data analysis:', dataAnalysis);
+    
+    // Test fetching GTFS data directly
+    console.log('Testing GTFS URL...');
+    const gtfsUrl = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=36';
+    let urlTest = { accessible: false };
+    try {
+      const testResponse = await fetch(gtfsUrl);
+      urlTest = {
+        accessible: true,
+        status: testResponse.status,
+        statusText: testResponse.statusText,
+        contentType: testResponse.headers.get('content-type'),
+        contentLength: testResponse.headers.get('content-length')
+      };
+      
+      // Check if it's a ZIP file
+      const buffer = await testResponse.arrayBuffer();
+      const firstBytes = Buffer.from(buffer.slice(0, 4)).toString('hex');
+      urlTest.firstBytesHex = firstBytes;
+      urlTest.isZip = firstBytes === '504b0304'; // ZIP file signature
+      
+    } catch (err) {
+      urlTest.error = err.message;
+    }
+    
+    res.json({
+      diagnosis: {
+        timestamp: new Date().toISOString(),
+        issue: 'Schedule data structure exists but is empty (0 trips, 0 stops, 0 shapes)',
+        likely_cause: 'ScheduleLoader.fetchAndParseGTFS() is not populating data correctly'
+      },
+      loader_analysis: loaderInfo,
+      load_result: {
+        called: true,
+        returned_type: typeof loadResult,
+        has_error: loadResult?.error || false
+      },
+      data_analysis: dataAnalysis,
+      gtfs_url_test: {
+        url: gtfsUrl,
+        ...urlTest
+      },
+      next_steps: [
+        'Check ScheduleLoader.js fetchAndParseGTFS() method',
+        'Check if ZIP extraction is working',
+        'Check if CSV parsing is working',
+        'Look for error handling that might swallow errors'
+      ]
+    });
+    
+  } catch (error) {
+    console.error('Diagnosis error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
 
 // 1. SHAPE DEBUGGING - Most important for virtual bus movement
 app.get('/api/debug/shape-movement', async (req, res) => {
