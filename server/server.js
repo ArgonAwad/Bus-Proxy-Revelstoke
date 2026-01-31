@@ -546,119 +546,220 @@ import path from 'path';
 // Add this to your debugging endpoints section
 app.get('/api/debug/csv-raw', async (req, res) => {
   try {
-    const { file, limit, showall } = req.query;
-    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
+    const { file } = req.query;
     
-    // List available files
-    const files = await fs.readdir(SCHEDULE_DIR);
-    const txtFiles = files.filter(f => f.endsWith('.txt'));
+    // Check if schedule data is loaded in memory
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
     
-    // If specific file requested
-    if (file) {
-      if (!txtFiles.includes(file)) {
-        return res.status(404).json({
-          error: 'File not found',
-          available_files: txtFiles,
-          requested: file
-        });
-      }
-      
-      const filePath = path.join(SCHEDULE_DIR, file);
-      const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
-      const headers = lines[0] ? lines[0].split(',') : [];
-      
-      const rowLimit = parseInt(limit) || (showall === 'true' ? lines.length : 50);
-      const limitedLines = lines.slice(0, Math.min(rowLimit, lines.length));
-      
-      // Parse CSV rows
-      const data = limitedLines.map((line, index) => {
-        if (index === 0) return { row: 0, type: 'header', values: headers };
-        
-        const values = line.split(',');
-        const rowData = {};
-        headers.forEach((header, i) => {
-          rowData[header.trim()] = values[i] ? values[i].trim() : '';
-        });
-        
-        return {
-          row: index,
-          type: 'data',
-          values: values,
-          parsed: rowData
-        };
-      });
-      
-      return res.json({
-        file,
-        path: filePath,
-        stats: {
-          total_lines: lines.length,
-          data_rows: lines.length - 1,
-          showing_rows: limitedLines.length - 1,
-          headers_count: headers.length,
-          file_size_bytes: content.length
-        },
-        headers: headers,
-        sample_data: data
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    if (!scheduleData) {
+      return res.status(500).json({
+        error: 'Schedule data not loaded in memory',
+        schedule_loader_status: 'No data loaded'
       });
     }
     
-    // Return list of files with previews
-    const filePreviews = {};
+    // Show what's available in memory
+    const availableData = {
+      trips: {
+        count: Object.keys(scheduleData.tripsMap || {}).length,
+        sample: Object.entries(scheduleData.tripsMap || {}).slice(0, 3)
+      },
+      stops: {
+        count: Object.keys(scheduleData.stops || {}).length,
+        sample: Object.entries(scheduleData.stops || {}).slice(0, 3)
+      },
+      shapes: {
+        count: Object.keys(scheduleData.shapes || {}).length,
+        sample: Object.keys(scheduleData.shapes || {}).slice(0, 3).map(id => ({
+          id,
+          point_count: scheduleData.shapes[id].length
+        }))
+      }
+    };
     
-    for (const fileName of txtFiles.slice(0, 10)) { // Limit to 10 files
-      try {
-        const filePath = path.join(SCHEDULE_DIR, fileName);
-        const content = await fs.readFile(filePath, 'utf-8');
-        const lines = content.split('\n');
-        const headers = lines[0] ? lines[0].split(',') : [];
-        
-        filePreviews[fileName] = {
-          lines: lines.length,
-          headers: headers,
-          first_data_row: lines[1] ? lines[1].split(',') : [],
-          sample: lines.slice(0, 3).map(line => line.split(','))
-        };
-      } catch (err) {
-        filePreviews[fileName] = { error: err.message };
+    res.json({
+      note: 'On Vercel, schedule data is loaded from URL, not local CSV files',
+      schedule_data_available: true,
+      source: scheduleData.source || 'unknown',
+      timestamp: scheduleData.timestamp || new Date().toISOString(),
+      data_structure: {
+        tripsMap: 'Loaded with parsed trips',
+        stops: 'Loaded with stop coordinates',
+        shapes: 'Loaded with shape points',
+        stopTimesByTrip: 'Loaded with stop sequences',
+        stopTimesByStop: 'Loaded for reverse lookup'
+      },
+      available_data: availableData
+    });
+    
+  } catch (error) {
+    console.error('Error in /api/debug/csv-raw:', error);
+    res.status(500).json({ 
+      error: error.message,
+      environment: process.env.VERCEL ? 'Vercel Serverless' : 'Local'
+    });
+  }
+});
+
+app.get('/api/debug/csv-structure', async (req, res) => {
+  try {
+    // Ensure schedule is loaded
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
+    }
+    
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    if (!scheduleData) {
+      return res.status(500).json({ error: 'Schedule data not loaded' });
+    }
+    
+    // Analyze the in-memory structure
+    const analysis = {
+      trips: {
+        count: Object.keys(scheduleData.tripsMap || {}).length,
+        sample_trip: Object.entries(scheduleData.tripsMap || {})[0],
+        fields: Object.keys(Object.values(scheduleData.tripsMap || {})[0] || {})
+      },
+      stops: {
+        count: Object.keys(scheduleData.stops || {}).length,
+        sample_stop: Object.entries(scheduleData.stops || {})[0],
+        fields: Object.keys(Object.values(scheduleData.stops || {})[0] || {})
+      },
+      shapes: {
+        count: Object.keys(scheduleData.shapes || {}).length,
+        sample_shape: scheduleData.shapes ? Object.keys(scheduleData.shapes)[0] : null,
+        sample_points: scheduleData.shapes ? 
+          scheduleData.shapes[Object.keys(scheduleData.shapes)[0]]?.slice(0, 3) : []
+      },
+      stop_times: {
+        by_trip_count: Object.keys(scheduleData.stopTimesByTrip || {}).length,
+        sample_stop_time: scheduleData.stopTimesByTrip ? 
+          scheduleData.stopTimesByTrip[Object.keys(scheduleData.stopTimesByTrip)[0]]?.[0] : null,
+        fields: scheduleData.stopTimesByTrip ? 
+          Object.keys(scheduleData.stopTimesByTrip[Object.keys(scheduleData.stopTimesByTrip)[0]]?.[0] || {}) : []
+      }
+    };
+    
+    // Check referential integrity
+    const integrityIssues = [];
+    
+    // Check if all trip IDs in stopTimes exist in tripsMap
+    if (scheduleData.stopTimesByTrip && scheduleData.tripsMap) {
+      const stopTimeTrips = Object.keys(scheduleData.stopTimesByTrip);
+      const missingTrips = stopTimeTrips.filter(tripId => !scheduleData.tripsMap[tripId]);
+      if (missingTrips.length > 0) {
+        integrityIssues.push(`stopTimesByTrip has ${missingTrips.length} trip IDs not found in tripsMap`);
       }
     }
     
-    // Check for specific critical files
-    const criticalFiles = ['stops.txt', 'trips.txt', 'stop_times.txt', 'shapes.txt', 'routes.txt'];
-    const criticalStatus = {};
-    
-    for (const criticalFile of criticalFiles) {
-      const filePath = path.join(SCHEDULE_DIR, criticalFile);
-      try {
-        await fs.access(filePath);
-        const content = await fs.readFile(filePath, 'utf-8');
-        const lines = content.split('\n');
-        criticalStatus[criticalFile] = {
-          exists: true,
-          lines: lines.length,
-          has_data: lines.length > 1
-        };
-      } catch {
-        criticalStatus[criticalFile] = { exists: false };
+    // Check if all stop IDs in stops exist
+    if (scheduleData.stopTimesByTrip && scheduleData.stops) {
+      const allStopIds = new Set();
+      Object.values(scheduleData.stopTimesByTrip || {}).forEach(stopTimes => {
+        stopTimes.forEach(st => {
+          if (st.stop_id) allStopIds.add(st.stop_id);
+        });
+      });
+      
+      const missingStops = Array.from(allStopIds).filter(stopId => !scheduleData.stops[stopId]);
+      if (missingStops.length > 0) {
+        integrityIssues.push(`stopTimes reference ${missingStops.length} stop IDs not found in stops`);
       }
     }
     
     res.json({
-      schedule_dir: SCHEDULE_DIR,
-      files_found: txtFiles,
-      total_files: txtFiles.length,
-      critical_files_status: criticalStatus,
-      file_previews: filePreviews,
-      usage_note: 'Use ?file=stops.txt to see specific file contents'
+      analysis_time: new Date().toISOString(),
+      schedule_source: scheduleData.source || 'unknown',
+      data_loaded: true,
+      analysis,
+      integrity: {
+        issues: integrityIssues,
+        valid: integrityIssues.length === 0
+      },
+      summary: {
+        total_trips: analysis.trips.count,
+        total_stops: analysis.stops.count,
+        total_shapes: analysis.shapes.count,
+        has_complete_data: analysis.trips.count > 0 && analysis.stops.count > 0
+      }
     });
     
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a new endpoint to see how ScheduleLoader works
+app.get('/api/debug/schedule-loader', async (req, res) => {
+  try {
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    // Check the loader's source
+    const loaderInfo = {
+      class_name: scheduleLoader.constructor.name,
+      has_load_method: typeof scheduleLoader.loadSchedules === 'function',
+      data_loaded: !!scheduleData,
+      data_keys: scheduleData ? Object.keys(scheduleData) : []
+    };
+    
+    // Try to trace where data comes from
+    const scheduleUrl = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=36';
+    
+    res.json({
+      loader_info: loaderInfo,
+      likely_source: scheduleUrl,
+      environment: {
+        vercel: !!process.env.VERCEL,
+        node_env: process.env.NODE_ENV
+      },
+      check_endpoints: [
+        '/api/debug/schedule-verify - Check loaded schedule data',
+        '/api/buses - Test if virtual vehicles work',
+        '/api/shapes - View shape data'
+      ]
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add endpoint to fetch raw GTFS data from URL (for debugging)
+app.get('/api/debug/fetch-gtfs', async (req, res) => {
+  try {
+    const { operatorId = '36' } = req.query;
+    const url = `https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=${operatorId}`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `Failed to fetch GTFS: ${response.statusText}`,
+        url
+      });
+    }
+    
+    const contentType = response.headers.get('content-type');
+    const contentLength = response.headers.get('content-length');
+    
+    res.json({
+      url,
+      status: response.status,
+      content_type: contentType,
+      content_length: contentLength,
+      accessible: true,
+      note: 'GTFS data is available at this URL. Your ScheduleLoader likely fetches from here.'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
       error: error.message,
-      stack: error.stack,
-      schedule_dir_exists: await fs.access(path.join(process.cwd(), 'schedules')).then(() => true).catch(() => false)
+      note: 'Cannot fetch GTFS directly. ScheduleLoader must handle this differently.'
     });
   }
 });
@@ -1165,37 +1266,58 @@ app.get('/api/debug/schedule-verify', async (req, res) => {
 });
 app.get('/api/debug/gtfs-files', async (req, res) => {
   try {
-    const SCHEDULE_DIR = path.join(process.cwd(), 'schedules', 'operator_36');
-    
-    // Check what files exist locally
-    const files = await fs.readdir(SCHEDULE_DIR);
-    const txtFiles = files.filter(f => f.endsWith('.txt'));
-    
-    const fileContents = {};
-    
-    for (const fileName of txtFiles) {
-      try {
-        const filePath = path.join(SCHEDULE_DIR, fileName);
-        const content = await fs.readFile(filePath, 'utf-8');
-        fileContents[fileName] = {
-          size: content.length,
-          first_100_chars: content.substring(0, 100),
-          line_count: content.split('\n').length
-        };
-      } catch (err) {
-        fileContents[fileName] = { error: err.message };
-      }
+    // Instead of trying to read local files, show what's in memory
+    if (!scheduleLoader.scheduleData?.tripsMap) {
+      await scheduleLoader.loadSchedules();
     }
     
+    const scheduleData = scheduleLoader.scheduleData;
+    
     res.json({
-      schedule_dir: SCHEDULE_DIR,
-      files_found: txtFiles,
-      file_contents: fileContents
+      note: 'On Vercel, schedule files are loaded from URL, not local filesystem',
+      schedule_loaded: !!scheduleData,
+      available_in_memory: scheduleData ? {
+        trips: Object.keys(scheduleData.tripsMap || {}).length,
+        stops: Object.keys(scheduleData.stops || {}).length,
+        shapes: Object.keys(scheduleData.shapes || {}).length
+      } : null,
+      source: scheduleData?.source || 'URL (likely https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/)'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message
+    });
+  }
+});
+
+// Replace this endpoint:
+app.get('/api/debug/gtfs-structure', async (req, res) => {
+  try {
+    // Force reload to see what happens
+    console.log('Forcing schedule reload...');
+    await scheduleLoader.loadSchedules();
+    
+    const scheduleData = scheduleLoader.scheduleData;
+    
+    res.json({
+      schedule_status: {
+        loaded: !!scheduleData,
+        trips_count: Object.keys(scheduleData?.tripsMap || {}).length,
+        stops_count: Object.keys(scheduleData?.stops || {}).length,
+        shapes_count: Object.keys(scheduleData?.shapes || {}).length,
+        stop_times_count: Object.keys(scheduleData?.stopTimesByTrip || {}).length
+      },
+      sample_data: {
+        first_trip_key: Object.keys(scheduleData?.tripsMap || {})[0],
+        first_stop_key: Object.keys(scheduleData?.stops || {})[0],
+        first_shape_key: Object.keys(scheduleData?.shapes || {})[0]
+      },
+      environment: process.env.VERCEL ? 'Vercel Serverless' : 'Local Development'
     });
   } catch (error) {
     res.status(500).json({ 
       error: error.message,
-      stack: error.stack 
+      environment: process.env.VERCEL ? 'Vercel' : 'Local'
     });
   }
 });
