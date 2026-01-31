@@ -178,32 +178,47 @@ function getActiveRealBlockIds(vehicleEntities) {
 }
 
 // Enhanced vehicle positions with virtuals
-async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, includeVirtual = true, virtualMode = 'subs') {
+// Enhanced vehicle positions with virtual vehicles + parsed blockId
+async function getEnhancedVehiclePositions(
+  operatorId = DEFAULT_OPERATOR_ID,
+  includeVirtual = true,
+  virtualMode = 'subs',
+  allVirtuals = false
+) {
   try {
+    console.log(`🚀 Enhancing vehicle positions for operator ${operatorId}, virtual=${includeVirtual}, mode=${virtualMode}, allVirtuals=${allVirtuals}`);
+  
+    // Load schedule data if not already loaded
     if (!scheduleLoader.scheduleData?.tripsMap) {
       await scheduleLoader.loadSchedules();
     }
-
+  
+    // Fetch real vehicle positions and trip updates
     const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-
+  
+    console.log(`📊 Raw vehicles from API: ${vehicleResult.data?.entity?.length || 0}`);
+    console.log(`📊 Trip updates: ${tripResult.data?.entity?.length || 0}`);
+  
     let processedVehicles = [];
     let virtualVehicles = [];
-
+  
     if (vehicleResult.success && vehicleResult.data?.entity) {
       processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data.entity);
+      console.log(`🔄 Processed structure + blockId for ${processedVehicles.length} vehicles`);
     }
-
+  
+    // Add virtual vehicles if requested
     if (includeVirtual && tripResult.success) {
       try {
         const originalMode = virtualVehicleManager.currentMode;
         virtualVehicleManager.setMode(virtualMode);
-
+      
         const realVehicleIds = new Set();
         processedVehicles.forEach(v => {
           if (v.vehicle?.vehicle?.id) realVehicleIds.add(v.vehicle.vehicle.id);
         });
-
+      
         if (virtualMode === 'all') {
           virtualVehicles = virtualVehicleManager.generateAllVirtualVehicles(
             tripResult.data,
@@ -213,20 +228,22 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, inc
           virtualVehicles = virtualVehicleManager.generateSubstituteVirtualVehicles(
             tripResult.data,
             scheduleLoader.scheduleData,
-            realVehicleIds
+            realVehicleIds,
+            allVirtuals  // Pass the flag here!
           );
         }
-
+      
         virtualVehicleManager.updateVirtualPositions(scheduleLoader.scheduleData);
         virtualVehicleManager.setMode(originalMode);
+        console.log(`👻 Virtual vehicles generated: ${virtualVehicles.length} (allVirtuals=${allVirtuals})`);
       } catch (virtualError) {
         console.warn('⚠️ Virtual vehicle generation failed:', virtualError.message);
         virtualVehicles = [];
       }
     }
-
+  
     const allEntities = [...processedVehicles, ...virtualVehicles];
-
+  
     return {
       ...vehicleResult,
       data: {
@@ -237,6 +254,7 @@ async function getEnhancedVehiclePositions(operatorId = DEFAULT_OPERATOR_ID, inc
           total_vehicles: allEntities.length,
           virtual_vehicles: virtualVehicles.length,
           real_vehicles: processedVehicles.length,
+          all_virtuals_mode: allVirtuals
         }
       }
     };
