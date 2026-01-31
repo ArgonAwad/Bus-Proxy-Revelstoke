@@ -8,6 +8,7 @@ import ScheduleLoader from './schedule-loader.js';
 
 const scheduleLoader = new ScheduleLoader();
 
+const app = express();
 app.use(cors());
 
 // URL of the GTFS-Realtime protobuf schema
