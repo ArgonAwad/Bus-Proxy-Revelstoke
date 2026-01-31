@@ -244,63 +244,62 @@ class ScheduleLoader {
   }
 
   createStopsMap(stopsArray) {
-  console.log('🔍 createStopsMap called with', stopsArray.length, 'stops');
-  
-  if (stopsArray.length === 0) {
-    console.error('❌ No stops data provided to createStopsMap!');
-    return {};
-  }
+  console.log(`createStopsMap: Processing ${stopsArray?.length || 0} stops`);
   
   const map = {};
   let validCount = 0;
-  let invalidCount = 0;
-
-  // Log the first stop to see its structure
-  console.log('First stop object:', stopsArray[0]);
-  console.log('First stop keys:', Object.keys(stopsArray[0]));
-
+  
+  if (!stopsArray || stopsArray.length === 0) {
+    console.error('createStopsMap: No stops data provided');
+    return map;
+  }
+  
+  // Show first stop structure
+  console.log('Sample stop structure:', stopsArray[0]);
+  
   stopsArray.forEach((stop, index) => {
-    // Try to extract stop ID - handle different possible field names
-    const stopId = stop.stop_id || stop.stop_id || stop.id || stop.stopId;
-    const stopLat = stop.stop_lat || stop.lat || stop.latitude;
-    const stopLon = stop.stop_lon || stop.lon || stop.longitude;
-    
-    if (!stopId) {
-      console.warn(`Stop at index ${index} has no ID:`, stop);
-      invalidCount++;
-      return;
-    }
-    
-    const id = String(stopId).trim();
-    const lat = parseFloat(stopLat);
-    const lon = parseFloat(stopLon);
-
-    if (!isNaN(lat) && !isNaN(lon) && id) {
-      map[id] = {
+    try {
+      // Use the exact field names from your sample
+      const stopId = stop.stop_id;
+      const lat = parseFloat(stop.stop_lat);
+      const lon = parseFloat(stop.stop_lon);
+      const name = stop.stop_name || 'Unknown';
+      
+      if (!stopId) {
+        console.warn(`Stop at index ${index} has no ID`);
+        return;
+      }
+      
+      if (isNaN(lat) || isNaN(lon)) {
+        console.warn(`Stop ${stopId} has invalid coordinates: lat=${stop.stop_lat}, lon=${stop.stop_lon}`);
+        return;
+      }
+      
+      // Store with the exact ID from the file
+      map[stopId] = {
         lat,
         lon,
-        name: stop.stop_name?.trim() || stop.name?.trim() || 'Unnamed Stop'
+        name
       };
       validCount++;
       
-      // Log a few samples
+      // Log a few for verification
       if (validCount <= 3) {
-        console.log(`✅ Added stop ${id}: ${map[id].lat}, ${map[id].lon} - "${map[id].name}"`);
+        console.log(`✓ Added stop ${stopId}: "${name}" at ${lat}, ${lon}`);
       }
-    } else {
-      console.warn(`Invalid stop skipped: id=${id}, lat=${stopLat}, lon=${stopLon}`);
-      invalidCount++;
+    } catch (err) {
+      console.warn(`Error processing stop at index ${index}:`, err.message);
     }
   });
-
-  console.log(`[Stops] Loaded ${validCount} valid stops, ${invalidCount} invalid`);
-  console.log(`[Stops] Sample keys:`, Object.keys(map).slice(0, 5));
   
-  // Check for specific stops we know should exist
-  ['156087', '156011', '156083'].forEach(testId => {
-    console.log(`Looking for stop ${testId}:`, map[testId] ? 'FOUND' : 'NOT FOUND');
+  console.log(`createStopsMap: Successfully loaded ${validCount} stops out of ${stopsArray.length}`);
+  
+  // Verify we found the stops from your virtual bus example
+  const testStops = ['156087', '156011', '156083'];
+  testStops.forEach(id => {
+    console.log(`Stop ${id} in map: ${map[id] ? 'YES' : 'NO'}`);
   });
-
+  
   return map;
 }
 
