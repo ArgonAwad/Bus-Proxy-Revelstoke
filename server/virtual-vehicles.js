@@ -54,7 +54,7 @@ function isTripCurrentlyActive(stopTimes, currentTimeSec) {
 }
 
 // 4. Find current stop, next stop, and progress (0–1)
-export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
+function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length === 0) return null;
 
   const stops = stopTimes.map((st, idx) => ({
