@@ -1638,27 +1638,68 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Initialize virtual vehicle system
-async function initializeVirtualSystem() {
+// Improved startup: load schedule once + start updater + hourly refresh
+async function initializeSystem() {
   try {
-    console.log('🚀 Initializing virtual vehicle system...');
+    console.log('🚀 Server startup - initializing system...');
+
+    // 1. Load protobuf schema
+    await loadProto();
+
+    // 2. Force-load GTFS schedule at startup
+    console.log('Loading GTFS schedule at startup...');
+    await scheduleLoader.loadSchedules();
+    const counts = {
+      trips: Object.keys(scheduleLoader.scheduleData?.tripsMap || {}).length,
+      stops: Object.keys(scheduleLoader.scheduleData?.stops || {}).length,
+      shapes: Object.keys(scheduleLoader.scheduleData?.shapes || {}).length
+    };
+    console.log('GTFS schedule loaded at startup:', counts);
+
+    if (counts.trips === 0) {
+      console.warn('WARNING: No trips loaded at startup - virtuals may use fallback positions');
+    }
+
+    // 3. Start virtual updater
     if (virtualUpdater && typeof virtualUpdater.start === 'function') {
       virtualUpdater.start();
       console.log('✅ Virtual vehicle updater started');
     }
+
+    // 4. Setup hourly background refresh (check for GTFS updates)
+    const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+    setInterval(async () => {
+      try {
+        console.log('[Background] Checking for GTFS updates...');
+        // HEAD request to check if updated
+        const headRes = await fetch(GTFS_URL, { method: 'HEAD' });
+        const lastModified = headRes.headers.get('last-modified');
+        
+        // Compare with stored lastModified if you add it (for now, always refresh - or add logic)
+        await scheduleLoader.loadSchedules(); // Full reload if changed
+        console.log('[Background] GTFS refresh complete. New last-modified:', lastModified);
+      } catch (err) {
+        console.error('[Background] GTFS refresh failed:', err.message);
+      }
+    }, REFRESH_INTERVAL_MS);
+
+    // Graceful shutdown
     process.on('SIGTERM', () => {
-      console.log('🛑 Shutting down virtual vehicle system...');
+      console.log('🛑 Shutting down...');
       if (virtualUpdater && typeof virtualUpdater.stop === 'function') {
         virtualUpdater.stop();
       }
       process.exit(0);
     });
-    console.log('✅ Virtual vehicle system ready');
+
+    console.log('✅ System ready');
   } catch (error) {
-    console.error('❌ Failed to initialize virtual vehicle system:', error);
+    console.error('❌ Startup failed:', error.message, error.stack);
   }
 }
-initializeVirtualSystem().catch(console.error);
+
+// Run startup once
+initializeSystem().catch(err => console.error('Startup error:', err));
 
 // Export for Vercel
 export default app;
