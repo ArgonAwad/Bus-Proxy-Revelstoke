@@ -539,152 +539,65 @@ class VirtualVehicleManager {
 }
 
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
-    console.log(`\n📍 calculateCurrentPosition:`);
-    console.log(`   Trip: ${tripId}`);
-    console.log(`   Current stop: ${currentStop?.stopId}`);
-    console.log(`   Next stop: ${nextStop?.stopId}`);
-    console.log(`   Progress: ${progress}`);
-    
-    if (!scheduleData || !scheduleData.stops) {
-      console.warn('❌ No schedule data available');
-      return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-    }
+  console.log(`\n📍 calculateCurrentPosition | trip: ${tripId} | progress: ${progress.toFixed(3)}`);
 
-    const currentStopId = String(currentStop.stopId).trim();
-    const currentCoords = scheduleData.stops[currentStopId];
-    
-    if (!currentCoords) {
-      console.warn(`❌ No coordinates for stop ${currentStopId}`);
-      return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-    }
+  if (!scheduleData) {
+    console.error(`❌ scheduleData is completely missing in calculateCurrentPosition`);
+    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
+  }
 
-    console.log(`✅ Current stop coords: ${currentCoords.lat}, ${currentCoords.lon}`);
+  if (!scheduleData.stops || Object.keys(scheduleData.stops).length === 0) {
+    console.warn(`⚠️ scheduleData.stops is empty or missing`);
+  }
 
-    // Try shape interpolation first (most accurate)
-    if (tripId && scheduleData.tripsMap && scheduleData.shapes && progress > 0) {
-      const shapePos = this.calculatePositionAlongShape(tripId, progress, scheduleData);
-      if (shapePos) {
-        console.log(`✅ Using shape interpolation`);
-        return shapePos;
-      }
-    }
+  if (!scheduleData.shapes || Object.keys(scheduleData.shapes).length === 0) {
+    console.warn(`⚠️ scheduleData.shapes is empty or missing`);
+  }
 
-    // Fallback: linear interpolation between stops
-    let lat = currentCoords.lat;
-    let lon = currentCoords.lon;
-    let speed = 0;
-    let bearing = null;
+  const currentStopId = String(currentStop.stopId).trim();
+  const currentCoords = scheduleData.stops[currentStopId];
 
-    if (progress > 0 && nextStop) {
-      const nextStopId = String(nextStop.stopId).trim();
-      const nextCoords = scheduleData.stops[nextStopId];
-      
-      if (nextCoords) {
-        console.log(`✅ Next stop coords: ${nextCoords.lat}, ${nextCoords.lon}`);
-        
-        lat = currentCoords.lat + (nextCoords.lat - currentCoords.lat) * progress;
-        lon = currentCoords.lon + (nextCoords.lon - currentCoords.lon) * progress;
-        speed = 25; // km/h
-        bearing = this.calculateBearing(currentCoords.lat, currentCoords.lon, 
-                                        nextCoords.lat, nextCoords.lon);
-        
-        console.log(`📈 Interpolated: ${lat}, ${lon}`);
-        console.log(`   Speed: ${speed} km/h, Bearing: ${bearing}°`);
-      } else {
-        console.warn(`❌ No coordinates for next stop ${nextStopId}`);
-      }
+  if (!currentCoords) {
+    console.warn(`❌ No coordinates for stop ${currentStopId}`);
+    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
+  }
+
+  console.log(`Current stop coords: ${currentCoords.lat}, ${currentCoords.lon}`);
+
+  // Try shape interpolation first (most accurate)
+  if (tripId && scheduleData.tripsMap && scheduleData.shapes && progress > 0) {
+    const shapePos = this.calculatePositionAlongShape(tripId, progress, scheduleData);
+    if (shapePos) {
+      console.log(`✅ Using shape interpolation → lat: ${shapePos.latitude.toFixed(6)}, lng: ${shapePos.longitude.toFixed(6)}`);
+      return shapePos;
     } else {
-      console.log(`⏸️ At stop or no progress`);
+      console.log(`Shape interpolation failed (no shape or points)`);
     }
-
-    return { latitude: lat, longitude: lon, bearing, speed };
   }
 
-  calculatePositionAlongShape(tripId, progress, scheduleData) {
-    console.log(`\n🔄 calculatePositionAlongShape: ${tripId}, progress: ${progress}`);
-    
-    const trip = scheduleData.tripsMap?.[tripId];
-    if (!trip || !trip.shape_id) {
-      console.log(`❌ No shape_id for trip ${tripId}`);
-      return null;
+  // Fallback: linear between stops
+  let lat = currentCoords.lat;
+  let lon = currentCoords.lon;
+  let speed = 0;
+  let bearing = null;
+
+  if (progress > 0 && nextStop) {
+    const nextStopId = String(nextStop.stopId).trim();
+    const nextCoords = scheduleData.stops[nextStopId];
+
+    if (nextCoords) {
+      lat = currentCoords.lat + (nextCoords.lat - currentCoords.lat) * progress;
+      lon = currentCoords.lon + (nextCoords.lon - currentCoords.lon) * progress;
+      speed = 25;
+      bearing = this.calculateBearing(currentCoords.lat, currentCoords.lon, nextCoords.lat, nextCoords.lon);
+      console.log(`Linear fallback: ${lat.toFixed(6)}, ${lon.toFixed(6)} | bearing ${bearing}°`);
+    } else {
+      console.warn(`No coords for next stop ${nextStopId}`);
     }
-
-    const shapeId = trip.shape_id;
-    const shapePoints = scheduleData.shapes?.[shapeId];
-    
-    if (!shapePoints || shapePoints.length < 2) {
-      console.log(`❌ No shape points for shape ${shapeId}`);
-      return null;
-    }
-
-    console.log(`✅ Shape ${shapeId} has ${shapePoints.length} points`);
-
-    // Check if shape has distance measurements
-    const hasDistances = shapePoints[0].dist !== null && 
-                        shapePoints[shapePoints.length - 1].dist !== null;
-    
-    if (hasDistances) {
-      const totalDistance = shapePoints[shapePoints.length - 1].dist;
-      const targetDistance = progress * totalDistance;
-      
-      console.log(`📏 Using distance-based interpolation`);
-      console.log(`   Total distance: ${totalDistance}m, Target: ${targetDistance.toFixed(0)}m`);
-      
-      for (let i = 0; i < shapePoints.length - 1; i++) {
-        const p1 = shapePoints[i];
-        const p2 = shapePoints[i + 1];
-        
-        if (targetDistance >= p1.dist && targetDistance <= p2.dist) {
-          const segmentDist = p2.dist - p1.dist;
-          const segmentProgress = segmentDist > 0 ? (targetDistance - p1.dist) / segmentDist : 0;
-          
-          const lat = p1.lat + (p2.lat - p1.lat) * segmentProgress;
-          const lon = p1.lon + (p2.lon - p1.lon) * segmentProgress;
-          
-          console.log(`   Segment ${i}/${shapePoints.length}:`);
-          console.log(`     p1: ${p1.lat},${p1.lon} (${p1.dist}m)`);
-          console.log(`     p2: ${p2.lat},${p2.lon} (${p2.dist}m)`);
-          console.log(`     Segment progress: ${segmentProgress.toFixed(3)}`);
-          console.log(`     Result: ${lat},${lon}`);
-          
-          return { 
-            latitude: lat, 
-            longitude: lon, 
-            bearing: this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon),
-            speed: 25 
-          };
-        }
-      }
-    }
-
-    // Fallback: uniform interpolation by point index
-    console.log(`📈 Using uniform point interpolation`);
-    const totalPoints = shapePoints.length;
-    const exactIndex = progress * (totalPoints - 1);
-    const index = Math.floor(exactIndex);
-    const nextIndex = Math.min(index + 1, totalPoints - 1);
-    const segmentProgress = exactIndex - index;
-    
-    const p1 = shapePoints[index];
-    const p2 = shapePoints[nextIndex];
-    
-    console.log(`   Points: ${index} → ${nextIndex} of ${totalPoints}`);
-    console.log(`   Segment progress: ${segmentProgress.toFixed(3)}`);
-    
-    const lat = p1.lat + (p2.lat - p1.lat) * segmentProgress;
-    const lon = p1.lon + (p2.lon - p1.lon) * segmentProgress;
-    
-    console.log(`   p1: ${p1.lat},${p1.lon}`);
-    console.log(`   p2: ${p2.lat},${p2.lon}`);
-    console.log(`   Result: ${lat},${lon}`);
-    
-    return { 
-      latitude: lat, 
-      longitude: lon, 
-      bearing: this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon),
-      speed: 25 
-    };
   }
+
+  return { latitude: lat, longitude: lon, bearing, speed };
+}
 
   calculateBearing(lat1, lon1, lat2, lon2) {
     // Convert degrees to radians
