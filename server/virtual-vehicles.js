@@ -183,11 +183,13 @@ function calculateCurrentPosition(currentStop, nextStop, progress, scheduleData,
   return { latitude: coords.lat, longitude: coords.lon, bearing: null, speed: 0 };
 }
 
-// Export the minimal helpers
 export {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
   findCurrentStopAndProgress,
-  calculateCurrentPosition
+  calculateCurrentPosition,
+  calculateBearing,              
+  getRouteDisplayName,
+  calculatePositionAlongShape     
 };
