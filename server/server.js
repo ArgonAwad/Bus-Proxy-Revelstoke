@@ -378,18 +378,18 @@ app.get('/api/buses', async (req, res) => {
 });
 
 // Debug endpoint to see exactly what is happening with virtual position calculation
+// Debug endpoint to inspect virtual position calculation
 app.get('/api/debug/virtuals-detail', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || '36';
+    const allVirtuals = req.query.all_virtuals === 'true';
     const currentTimeSec = Math.floor(Date.now() / 1000);
+    const start = Date.now();
 
-    console.log(`[DEBUG-VIRTUALS] Called | time=${currentTimeSec}`);
+    console.log(`[DEBUG-VIRTUALS] Called | operator=${operatorId} | all=${allVirtuals} | time=${currentTimeSec}`);
 
-    // Fetch trip updates
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-    if (!tripResult.success) {
-      return res.status(503).json({ error: 'Trip feed unavailable' });
-    }
+    if (!tripResult.success) return res.status(503).json({ error: 'Trip feed unavailable' });
 
     await ensureScheduleLoaded();
     const schedule = scheduleLoader.scheduleData;
@@ -405,9 +405,12 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
       scheduleStats: {
         tripsCount: Object.keys(schedule.tripsMap).length,
         shapesCount: Object.keys(schedule.shapes).length,
-        stopsCount: Object.keys(schedule.stops).length
+        stopsCount: Object.keys(schedule.stops).length,
+        sampleTripKeys: Object.keys(schedule.tripsMap).slice(0, 3),  // Shows how trips are keyed
+        sampleShapeKeys: Object.keys(schedule.shapes).slice(0, 3)   // Shows shape IDs
       },
-      activeVirtuals: []
+      rtTrips: tripResult.data.entity.map(e => e.tripUpdate?.trip?.tripId).filter(Boolean),
+      virtualsDebug: []
     };
 
     tripResult.data.entity?.forEach(entity => {
@@ -417,71 +420,44 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
       const trip = tu.trip;
       const stopTimes = tu.stopTimeUpdate;
       const blockId = extractBlockIdFromTripId(trip.tripId);
-      if (!blockId) return;
 
-      const isActive = isTripCurrentlyActive(stopTimes, currentTimeSec);
-      if (!isActive) return;  // only include active ones
+      const active = isTripCurrentlyActive(stopTimes, currentTimeSec);
+      if (!active && !allVirtuals) return;  // Skip inactive unless all
 
       const info = findCurrentStopAndProgress(stopTimes, currentTimeSec);
-      if (!info) return;
-
-      const { currentStop, nextStop, progress } = info;
 
       const shapeId = getShapeIdFromTrip(trip.tripId, schedule);
 
-      let positionResult = null;
+      let position = null;
       let shapeUsed = false;
       let fallbackReason = null;
 
-      if (trip.tripId && progress > 0) {
-        positionResult = calculatePositionAlongShape(trip.tripId, progress, schedule);
-        if (positionResult) {
-          shapeUsed = true;
-        } else {
-          fallbackReason = 'No valid shape points or shape_id';
-        }
+      if (info) {
+        const { currentStop, nextStop, progress } = info;
+        position = calculateCurrentPosition(currentStop, nextStop, progress, schedule, trip.tripId);
+        shapeUsed = true;  // Assume shape success if position calculated — adjust based on logs
+      } else {
+        fallbackReason = 'No stop info';
       }
 
-      if (!positionResult && nextStop) {
-        const nextId = String(nextStop.stopId).trim();
-        const currentId = String(currentStop.stopId).trim();
-        const cCoords = schedule.stops[currentId];
-        const nCoords = schedule.stops[nextId];
-        if (cCoords && nCoords) {
-          const lat = cCoords.lat + (nCoords.lat - cCoords.lat) * progress;
-          const lon = cCoords.lon + (nCoords.lon - cCoords.lon) * progress;
-          const bearing = calculateBearing(cCoords.lat, cCoords.lon, nCoords.lat, nCoords.lon);
-          positionResult = { latitude: lat, longitude: lon, bearing, speed: 25 };
-          fallbackReason = 'Linear between stops (shape failed)';
-        } else {
-          fallbackReason = 'No stop coordinates';
-        }
-      }
-
-      if (!positionResult) {
-        const coords = schedule.stops[String(currentStop.stopId).trim()];
-        positionResult = coords
-          ? { latitude: coords.lat, longitude: coords.lon, bearing: null, speed: 0 }
-          : { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-        fallbackReason = fallbackReason || 'Ultimate fallback (no data)';
-      }
-
-      debugInfo.activeVirtuals.push({
+      debugInfo.virtualsDebug.push({
+        rtTripId: trip.tripId,
         blockId,
-        tripId: trip.tripId,
         routeId: trip.routeId,
         directionId: trip.directionId,
         startTime: trip.startTime,
-        isActive: isActive,
-        progress: progress.toFixed(4),
-        currentStop: currentStop.stopId,
-        nextStop: nextStop?.stopId || null,
+        isActive: active,
+        progress: info?.progress.toFixed(4) || 0,
+        currentStop: info?.currentStop.stopId || 'none',
+        nextStop: info?.nextStop?.stopId || 'none',
         shapeId,
         shapeUsed,
         fallbackReason,
-        position: positionResult
+        position
       });
     });
+
+    const tookMs = Date.now() - start;
 
     res.json(debugInfo);
   } catch (err) {
