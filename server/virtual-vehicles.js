@@ -1,32 +1,25 @@
 export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length === 0) return null;
-
   const stops = stopTimes.map((st, idx) => ({
     idx,
     stop: st,
     time: Number(st.departure?.time || st.arrival?.time || 0)
   }));
-
   const firstTime = stops[0].time;
   const lastTime = stops[stops.length - 1].time;
-
   if (isNaN(firstTime) || isNaN(lastTime)) return null;
-
   // Before trip starts (at first stop)
   if (currentTimeSec < firstTime) {
     return { currentStop: stopTimes[0], nextStop: stopTimes[1] || null, progress: 0 };
   }
-
   // After trip ends (at last stop)
   if (currentTimeSec > lastTime) {
     return { currentStop: stopTimes[stopTimes.length - 1], nextStop: null, progress: 1 };
   }
-
   // Find current segment
   for (let i = 0; i < stops.length - 1; i++) {
     const depart = stops[i].time;
-    const arrive = stops[i + 1].time || depart;  // fallback if no arrival
-
+    const arrive = stops[i + 1].time || depart; // fallback if no arrival
     if (currentTimeSec >= depart && currentTimeSec <= arrive) {
       const duration = arrive - depart;
       const elapsed = currentTimeSec - depart;
@@ -38,7 +31,6 @@ export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
       };
     }
   }
-
   // Approaching next stop (after last departure)
   for (let i = 0; i < stops.length; i++) {
     if (stops[i].time > currentTimeSec) {
@@ -52,7 +44,16 @@ export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
       return { currentStop: prev, nextStop: next, progress: Math.min(1, progress) };
     }
   }
-
   // Default: at end
   return { currentStop: stopTimes[stopTimes.length - 1], nextStop: null, progress: 1 };
 }
+
+// Export everything — keep this at the BOTTOM of the file, OUTSIDE any function
+export {
+  extractBlockIdFromTripId,
+  getShapeIdFromTrip,
+  isTripCurrentlyActive,
+  findCurrentStopAndProgress,
+  calculateCurrentPosition,
+  getRouteDisplayName
+};
