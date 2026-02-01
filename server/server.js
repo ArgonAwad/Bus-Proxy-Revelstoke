@@ -168,26 +168,105 @@ app.get('/api/virtuals', async (req, res) => {
 
 // Keep /api/buses (real + virtual combined) — simplified
 app.get('/api/buses', async (req, res) => {
+  if (!root) return res.status(500).json({ error: 'Proto not loaded' });
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    await ensureScheduleLoaded();
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
-    const alertsResult = await fetchGTFSFeed('alerts.pb', operatorId);
+    const noVirtuals = 'no_virtuals' in req.query;
+    const allVirtuals = req.query.all_virtuals === 'true';
+    const startTime = Date.now();
+    console.log(`[${new Date().toISOString()}] /api/buses called for operator ${operatorId} | no_virtuals=${noVirtuals} | all_virtuals=${allVirtuals}`);
 
-    res.json({
-      metadata: {
-        operatorId,
-        fetchedAt: new Date().toISOString(),
-        feeds: {
-          vehicle_positions: vehicleResult,
-          trip_updates: tripResult,
-          alerts: alertsResult
+    const [vehicleResult, tripResult, alertsResult] = await Promise.all([
+      fetchGTFSFeed('vehicleupdates.pb', operatorId),
+      fetchGTFSFeed('tripupdates.pb', operatorId),
+      fetchGTFSFeed('alerts.pb', operatorId)
+    ]);
+
+    const enhancedVehicleResult = await getEnhancedVehiclePositions(
+      operatorId,
+      !noVirtuals,
+      'subs',
+      allVirtuals
+    );
+
+    let enhancedTripResult = tripResult;
+    if (tripResult.success && tripResult.data?.entity) {
+      const processedTripUpdates = addParsedBlockIdToTripUpdates(tripResult.data.entity);
+      enhancedTripResult = {
+        ...tripResult,
+        data: {
+          ...tripResult.data,
+          entity: processedTripUpdates
         }
-      }
+      };
+    }
+
+    const responseTime = Date.now() - startTime;
+
+    if (noVirtuals) {
+      // Return RAW GTFS format for compatibility with Railway/frontend
+      res.json(enhancedVehicleResult.data);  // Just header + entity array
+    } else {
+      // Return wrapped version
+      const response = {
+        metadata: {
+          operatorId,
+          location: operatorId === '36' ? 'Revelstoke' :
+                    operatorId === '47' ? 'Kelowna' :
+                    operatorId === '48' ? 'Victoria' : `Operator ${operatorId}`,
+          fetchedAt: new Date().toISOString(),
+          responseTimeMs: responseTime,
+          no_virtuals: noVirtuals,
+          all_virtuals_mode: allVirtuals,
+          feeds: {
+            vehicle_positions: {
+              success: enhancedVehicleResult.success,
+              entities: enhancedVehicleResult.success ? enhancedVehicleResult.data.entity?.length || 0 : 0,
+              virtual_vehicles: noVirtuals ? 0 : (enhancedVehicleResult.data?.metadata?.virtual_vehicles || 0),
+              real_vehicles: enhancedVehicleResult.data?.metadata?.real_vehicles || 0,
+              url: enhancedVehicleResult.url
+            },
+            trip_updates: {
+              success: tripResult.success,
+              entities: tripResult.success ? enhancedTripResult.data.entity?.length || 0 : 0,
+              url: tripResult.url
+            },
+            service_alerts: {
+              success: alertsResult.success,
+              entities: alertsResult.success ? alertsResult.data.entity?.length || 0 : 0,
+              url: alertsResult.url
+            }
+          },
+          block_id: {
+            enabled: true,
+            source: "parsed_from_trip_id",
+            method: "last_numeric_part_after_colon",
+            vehicles_with_blockId: enhancedVehicleResult.data?.entity?.filter(e => !!e.vehicle?.trip?.blockId)?.length || 0,
+            trip_updates_with_blockId: enhancedTripResult.data?.entity?.filter(e => !!e.tripUpdate?.trip?.blockId)?.length || 0
+          }
+        },
+        data: {
+          vehicle_positions: enhancedVehicleResult.success ? enhancedVehicleResult.data : null,
+          trip_updates: enhancedTripResult.success ? enhancedTripResult.data : null,
+          service_alerts: alertsResult.success ? alertsResult.data : null
+        }
+      };
+      const errors = [];
+      if (!enhancedVehicleResult.success) errors.push(`Vehicle positions: ${enhancedVehicleResult.error}`);
+      if (!tripResult.success) errors.push(`Trip updates: ${tripResult.error}`);
+      if (!alertsResult.success) errors.push(`Service alerts: ${alertsResult.error}`);
+      if (errors.length > 0) response.metadata.errors = errors;
+      console.log(`[${new Date().toISOString()}] /api/buses completed in ${responseTime}ms`);
+      console.log(` Vehicles: ${enhancedVehicleResult.data?.entity?.length || 0}, Virtuals: ${noVirtuals ? 0 : (enhancedVehicleResult.data?.metadata?.virtual_vehicles || 0)}`);
+      res.json(response);
+    }
+  } catch (error) {
+    console.error('Error in /api/buses:', error);
+    res.status(500).json({
+      error: 'Failed to fetch combined feeds',
+      details: error.message,
+      timestamp: new Date().toISOString()
     });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed', details: err.message });
   }
 });
 
