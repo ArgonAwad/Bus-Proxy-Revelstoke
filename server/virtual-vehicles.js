@@ -147,6 +147,12 @@ function calculateBearing(lat1, lon1, lat2, lon2) {
   return Math.round(θ);
 }
 
+function getRouteDisplayName(routeId) {
+  if (!routeId) return 'Bus';
+  const match = routeId.match(/^(\d+)/);
+  return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
+}
+
 function calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
   if (!scheduleData?.stops) return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
 
