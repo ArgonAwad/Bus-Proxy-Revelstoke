@@ -412,19 +412,25 @@ app.get('/api/virtuals', async (req, res) => {
       ? expectedBlocks
       : expectedBlocks.filter(b => !activeRealBlocks.has(b));
 
-    // Use existing persisted virtuals first
+    // Step 1: Start with all existing persisted virtuals that match blocksToUse
     let virtualEntities = Array.from(virtualVehicleManager.virtualVehicles.values())
-      .filter(v => blocksToUse.includes(extractBlockIdFromTripId(v.vehicle.trip.tripId)));
+      .filter(v => {
+        const blockId = extractBlockIdFromTripId(v.vehicle?.trip?.tripId);
+        return blockId && blocksToUse.includes(blockId);
+      });
 
-    const seenBlocks = new Set(virtualEntities.map(v => extractBlockIdFromTripId(v.vehicle.trip.tripId)));
+    console.log(`Using ${virtualEntities.length} existing virtual vehicles from manager`);
 
-    // Only create missing ones
+    const seenBlocks = new Set(virtualEntities.map(v => extractBlockIdFromTripId(v.vehicle?.trip?.tripId)));
+
+    // Step 2: Create only missing ones (if any)
     processedTrips.forEach(entity => {
       const tu = entity.tripUpdate;
       if (!tu) return;
       const tripId = tu.trip?.tripId;
       const blockId = extractBlockIdFromTripId(tripId);
       if (!blockId || !blocksToUse.includes(blockId) || seenBlocks.has(blockId)) return;
+
       seenBlocks.add(blockId);
 
       const virtualEntity = virtualVehicleManager.createVirtualVehicle(
@@ -436,14 +442,16 @@ app.get('/api/virtuals', async (req, res) => {
       );
 
       if (virtualEntity) {
-        // Ensure initial position update
+        // Give it an initial position update
         virtualVehicleManager.updateVehiclePosition(virtualEntity, scheduleLoader.scheduleData);
         virtualEntities.push(virtualEntity);
+        console.log(`Created missing virtual for block ${blockId}`);
       }
     });
 
-    // Force one final update pass on all persisted virtuals
-    virtualVehicleManager.updateVirtualPositions(scheduleLoader.scheduleData);
+    // Step 3: Force one final update on ALL persisted virtuals before returning
+    const updateResult = virtualVehicleManager.updateVirtualPositions(scheduleLoader.scheduleData);
+    console.log(`Final update pass: ${updateResult.updated} updated, ${updateResult.removed} removed`);
 
     const responseTime = Date.now() - startTime;
     res.json({
@@ -455,7 +463,7 @@ app.get('/api/virtuals', async (req, res) => {
         total_scheduled_blocks: expectedBlocks.length,
         real_active_blocks: activeRealBlocks.size,
         virtuals_generated: virtualEntities.length,
-        virtuals_from_manager: virtualEntities.length - (virtualEntities.length - seenBlocks.size) // rough count
+        virtuals_from_manager: virtualEntities.length
       },
       data: {
         virtual_positions: {
@@ -469,7 +477,7 @@ app.get('/api/virtuals', async (req, res) => {
       }
     });
 
-    console.log(`Returned ${virtualEntities.length} virtual positions (${allVirtuals ? 'ALL mode' : 'missing only'})`);
+    console.log(`Returned ${virtualEntities.length} virtual positions (from manager + created)`);
   } catch (error) {
     console.error('Error in /api/virtuals:', error);
     res.status(500).json({
