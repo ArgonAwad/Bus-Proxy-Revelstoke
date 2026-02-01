@@ -54,6 +54,40 @@ async function fetchGTFSFeed(feedType, operatorId = DEFAULT_OPERATOR_ID) {
   }
 }
 
+// Add parsed blockId to vehicle entities
+function addParsedBlockIdToVehicles(vehicleEntities) {
+  if (!Array.isArray(vehicleEntities)) return vehicleEntities || [];
+  return vehicleEntities.map(entity => {
+    const processed = JSON.parse(JSON.stringify(entity));
+    const tripId = processed.vehicle?.trip?.tripId;
+    if (tripId) {
+      const blockId = extractBlockIdFromTripId(tripId);
+      if (blockId) {
+        if (!processed.vehicle.trip) processed.vehicle.trip = {};
+        processed.vehicle.trip.blockId = blockId;
+      }
+    }
+    return processed;
+  });
+}
+
+// Add parsed blockId to trip updates
+function addParsedBlockIdToTripUpdates(tripUpdateEntities) {
+  if (!Array.isArray(tripUpdateEntities)) return tripUpdateEntities || [];
+  return tripUpdateEntities.map(entity => {
+    const processed = JSON.parse(JSON.stringify(entity));
+    const tripId = processed.tripUpdate?.trip?.tripId;
+    if (tripId) {
+      const blockId = extractBlockIdFromTripId(tripId);
+      if (blockId) {
+        if (!processed.tripUpdate.trip) processed.tripUpdate.trip = {};
+        processed.tripUpdate.trip.blockId = blockId;
+      }
+    }
+    return processed;
+  });
+}
+
 // Ensure schedule loaded
 async function ensureScheduleLoaded() {
   if (!scheduleLoader.scheduleData?.tripsMap || Object.keys(scheduleLoader.scheduleData.tripsMap).length === 0) {
