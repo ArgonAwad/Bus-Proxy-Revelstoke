@@ -600,6 +600,81 @@ class VirtualVehicleManager {
   return { latitude: lat, longitude: lon, bearing, speed };
 }
 
+    calculatePositionAlongShape(tripId, progress, scheduleData) {
+    console.log(`\n🔄 calculatePositionAlongShape: ${tripId}, progress: ${progress}`);
+
+    const trip = scheduleData.tripsMap?.[tripId];
+    if (!trip || !trip.shape_id) {
+      console.log(`❌ No shape_id for trip ${tripId}`);
+      return null;
+    }
+    const shapeId = trip.shape_id;
+    const shapePoints = scheduleData.shapes?.[shapeId];
+
+    if (!shapePoints || shapePoints.length < 2) {
+      console.log(`❌ No shape points for shape ${shapeId}`);
+      return null;
+    }
+    console.log(`✅ Shape ${shapeId} has ${shapePoints.length} points`);
+
+    // Check if shape has distance measurements
+    const hasDistances = shapePoints[0].dist !== null &&
+                        shapePoints[shapePoints.length - 1].dist !== null;
+
+    if (hasDistances) {
+      const totalDistance = shapePoints[shapePoints.length - 1].dist;
+      const targetDistance = progress * totalDistance;
+
+      console.log(`📏 Using distance-based interpolation`);
+      console.log(` Total distance: ${totalDistance}m, Target: ${targetDistance.toFixed(0)}m`);
+
+      for (let i = 0; i < shapePoints.length - 1; i++) {
+        const p1 = shapePoints[i];
+        const p2 = shapePoints[i + 1];
+
+        if (targetDistance >= p1.dist && targetDistance <= p2.dist) {
+          const segmentDist = p2.dist - p1.dist;
+          const segmentProgress = segmentDist > 0 ? (targetDistance - p1.dist) / segmentDist : 0;
+
+          const lat = p1.lat + (p2.lat - p1.lat) * segmentProgress;
+          const lon = p1.lon + (p2.lon - p1.lon) * segmentProgress;
+
+          console.log(` Segment ${i}/${shapePoints.length}: p1: ${p1.lat},${p1.lon} (${p1.dist}m), p2: ${p2.lat},${p2.lon} (${p2.dist}m), progress: ${segmentProgress.toFixed(3)}`);
+
+          return {
+            latitude: lat,
+            longitude: lon,
+            bearing: this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon),
+            speed: 25
+          };
+        }
+      }
+    }
+
+    // Fallback: uniform point interpolation
+    console.log(`📈 Using uniform point interpolation`);
+    const totalPoints = shapePoints.length;
+    const exactIndex = progress * (totalPoints - 1);
+    const index = Math.floor(exactIndex);
+    const nextIndex = Math.min(index + 1, totalPoints - 1);
+    const segmentProgress = exactIndex - index;
+
+    const p1 = shapePoints[index];
+    const p2 = shapePoints[nextIndex];
+
+    const lat = p1.lat + (p2.lat - p1.lat) * segmentProgress;
+    const lon = p1.lon + (p2.lon - p1.lon) * segmentProgress;
+
+    console.log(` Points: ${index} → ${nextIndex} of ${totalPoints}, segment progress: ${segmentProgress.toFixed(3)}`);
+
+    return {
+      latitude: lat,
+      longitude: lon,
+      bearing: this.calculateBearing(p1.lat, p1.lon, p2.lat, p2.lon),
+      speed: 25
+    };
+  }
+
   calculateBearing(lat1, lon1, lat2, lon2) {
     // Convert degrees to radians
     const φ1 = lat1 * Math.PI / 180;
