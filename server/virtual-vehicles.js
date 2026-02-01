@@ -47,13 +47,3 @@ export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
   // Default: at end
   return { currentStop: stopTimes[stopTimes.length - 1], nextStop: null, progress: 1 };
 }
-
-// Export everything — keep this at the BOTTOM of the file, OUTSIDE any function
-export {
-  extractBlockIdFromTripId,
-  getShapeIdFromTrip,
-  isTripCurrentlyActive,
-  findCurrentStopAndProgress,
-  calculateCurrentPosition,
-  getRouteDisplayName
-};
