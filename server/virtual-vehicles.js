@@ -415,114 +415,128 @@ class VirtualVehicleManager {
   }
 
   findCurrentStopAndProgress(stopTimes, currentTimeSec) {
-    console.log(`\n🔍 findCurrentStopAndProgress: ${stopTimes?.length || 0} stops, currentTime: ${currentTimeSec}`);
-    
-    if (!stopTimes || stopTimes.length === 0) {
-      console.log('❌ No stop times provided');
-      return null;
-    }
+  console.log(`\n🔍 findCurrentStopAndProgress called | stops: ${stopTimes?.length || 0} | now: ${currentTimeSec}`);
 
-    // Helper to get stop time in seconds
-    const getStopTime = (stop) => {
-      if (stop.departure?.time) return parseInt(stop.departure.time, 10);
-      if (stop.arrival?.time) return parseInt(stop.arrival.time, 10);
-      return null;
+  if (!stopTimes || stopTimes.length === 0) {
+    console.log('❌ No stop times');
+    return null;
+  }
+
+  // Helper: safely parse time (handle string or number)
+  const parseTime = (time) => {
+    if (!time) return null;
+    const num = Number(time);
+    return isNaN(num) ? null : num;
+  };
+
+  // Convert all stop times to numbers once
+  const stopsWithTimes = stopTimes.map((st, idx) => {
+    const arrival = parseTime(st.arrival?.time);
+    const departure = parseTime(st.departure?.time);
+    const effectiveTime = departure ?? arrival ?? null;
+    return {
+      idx,
+      stop: st,
+      arrival,
+      departure,
+      effectiveTime,  // time when bus leaves this stop
+      isFirst: idx === 0,
+      isLast: idx === stopTimes.length - 1
     };
+  });
 
-    // Get first and last stop times
-    const firstStopTime = getStopTime(stopTimes[0]);
-    const lastStopTime = getStopTime(stopTimes[stopTimes.length - 1]);
-    
-    console.log(`First stop time: ${firstStopTime}, Last stop time: ${lastStopTime}`);
+  const firstDeparture = stopsWithTimes[0]?.effectiveTime;
+  const lastDeparture = stopsWithTimes[stopTimes.length - 1]?.effectiveTime;
 
-    // If trip hasn't started yet
-    if (firstStopTime && currentTimeSec < firstStopTime) {
-      const timeUntilStart = firstStopTime - currentTimeSec;
-      console.log(`⏰ Trip hasn't started yet. Starts in ${timeUntilStart} seconds`);
-      return { 
-        currentStop: stopTimes[0], 
-        nextStop: stopTimes[1] || null, 
-        progress: 0 
-      };
-    }
+  console.log(`First departure: ${firstDeparture}, Last: ${lastDeparture}`);
 
-    // If trip has ended (with 15 minute buffer)
-    if (lastStopTime && currentTimeSec > lastStopTime + 900) {
-      console.log(`🏁 Trip ended ${currentTimeSec - lastStopTime} seconds ago`);
-      return { 
-        currentStop: stopTimes[stopTimes.length - 1], 
-        nextStop: null, 
-        progress: 1 
-      };
-    }
-
-    // Find current segment between stops
-    for (let i = 0; i < stopTimes.length - 1; i++) {
-      const currentStop = stopTimes[i];
-      const nextStop = stopTimes[i + 1];
-      
-      const segmentStartTime = getStopTime(currentStop);
-      const segmentEndTime = getStopTime(nextStop);
-      
-      if (!segmentStartTime || !segmentEndTime) continue;
-      
-      console.log(`Segment ${i}: ${currentStop.stopId} (${segmentStartTime}) → ${nextStop.stopId} (${segmentEndTime})`);
-      
-      // Check if we're in this segment
-      if (currentTimeSec >= segmentStartTime && currentTimeSec <= segmentEndTime) {
-        const segmentDuration = segmentEndTime - segmentStartTime;
-        const timeInSegment = currentTimeSec - segmentStartTime;
-        const progress = segmentDuration > 0 ? timeInSegment / segmentDuration : 0;
-        
-        console.log(`✅ In segment! Progress: ${progress.toFixed(3)} (${timeInSegment}/${segmentDuration}s)`);
-        return { 
-          currentStop, 
-          nextStop, 
-          progress: Math.max(0, Math.min(1, progress)) 
-        };
-      }
-    }
-
-    // If we're exactly at a stop (within 2 minutes)
-    for (let i = 0; i < stopTimes.length; i++) {
-      const stopTime = getStopTime(stopTimes[i]);
-      if (stopTime && Math.abs(currentTimeSec - stopTime) < 120) {
-        console.log(`📍 At stop ${stopTimes[i].stopId} (within 2 minutes)`);
-        const nextStop = i < stopTimes.length - 1 ? stopTimes[i + 1] : null;
-        return { currentStop: stopTimes[i], nextStop, progress: 0 };
-      }
-    }
-
-    // If we're between segments but not within the schedule, find nearest upcoming stop
-    for (let i = 0; i < stopTimes.length; i++) {
-      const stopTime = getStopTime(stopTimes[i]);
-      if (stopTime && currentTimeSec < stopTime) {
-        console.log(`➡️ Between stops, next stop: ${stopTimes[i].stopId} in ${stopTime - currentTimeSec} seconds`);
-        const prevStop = i > 0 ? stopTimes[i - 1] : stopTimes[0];
-        const nextStop = stopTimes[i];
-        
-        // Estimate progress based on time to next stop
-        const prevStopTime = getStopTime(prevStop) || stopTime - 60; // Default 1 min gap
-        const timeToNextStop = stopTime - currentTimeSec;
-        const segmentDuration = stopTime - prevStopTime;
-        const progress = segmentDuration > 0 ? 1 - (timeToNextStop / segmentDuration) : 0;
-        
-        return { 
-          currentStop: prevStop, 
-          nextStop, 
-          progress: Math.max(0, Math.min(1, progress)) 
-        };
-      }
-    }
-
-    // Default: at last stop
-    console.log(`🔚 Default to last stop`);
-    return { 
-      currentStop: stopTimes[stopTimes.length - 1], 
-      nextStop: null, 
-      progress: 1 
+  // Before trip starts
+  if (firstDeparture && currentTimeSec < firstDeparture - 300) { // 5 min buffer
+    console.log(`⏳ Before start - at first stop`);
+    return {
+      currentStop: stopTimes[0],
+      nextStop: stopTimes[1] || null,
+      progress: 0,
+      status: 'pre_start'
     };
   }
+
+  // After trip ends (15 min buffer)
+  if (lastDeparture && currentTimeSec > lastDeparture + 900) {
+    console.log(`🏁 Trip ended`);
+    return {
+      currentStop: stopTimes[stopTimes.length - 1],
+      nextStop: null,
+      progress: 1,
+      status: 'completed'
+    };
+  }
+
+  // Find the segment we're in
+  for (let i = 0; i < stopsWithTimes.length - 1; i++) {
+    const current = stopsWithTimes[i];
+    const next = stopsWithTimes[i + 1];
+
+    const departTime = current.effectiveTime;
+    const arriveNext = next.arrival ?? next.effectiveTime;
+
+    if (departTime === null || arriveNext === null) continue;
+
+    // If we're between departure from current and arrival at next
+    if (currentTimeSec >= departTime && currentTimeSec <= arriveNext) {
+      const duration = arriveNext - departTime;
+      const elapsed = currentTimeSec - departTime;
+      let progress = duration > 0 ? elapsed / duration : 0;
+
+      // Small dwell realism: stay at stop for first 30s of segment
+      if (progress < 30 / duration) progress = 0;
+
+      progress = Math.max(0, Math.min(1, progress));
+
+      console.log(`✅ In segment ${i} → ${i+1} | depart: ${departTime} arrive: ${arriveNext} | elapsed: ${elapsed}/${duration} | progress: ${progress.toFixed(3)}`);
+
+      return {
+        currentStop: current.stop,
+        nextStop: next.stop,
+        progress,
+        status: progress < 0.05 ? 'departing' : 'in_transit'
+      };
+    }
+  }
+
+  // Fallback: nearest upcoming stop
+  for (let i = 0; i < stopsWithTimes.length; i++) {
+    const st = stopsWithTimes[i];
+    if (st.effectiveTime && currentTimeSec < st.effectiveTime) {
+      const prev = i > 0 ? stopsWithTimes[i-1] : null;
+      if (prev) {
+        const departPrev = prev.effectiveTime;
+        const arriveHere = st.arrival ?? st.effectiveTime;
+        const duration = arriveHere - departPrev;
+        const elapsed = currentTimeSec - departPrev;
+        let progress = duration > 0 ? elapsed / duration : 0;
+        progress = Math.max(0, Math.min(1, progress));
+        console.log(`➡️ Approaching stop ${st.stop.stopId} | progress ${progress.toFixed(3)}`);
+        return {
+          currentStop: prev.stop,
+          nextStop: st.stop,
+          progress,
+          status: 'approaching'
+        };
+      }
+      break;
+    }
+  }
+
+  // Default to last stop
+  console.log(`🔚 Defaulting to last stop`);
+  return {
+    currentStop: stopTimes[stopTimes.length - 1],
+    nextStop: null,
+    progress: 1,
+    status: 'at_end'
+  };
+}
 
   calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
     console.log(`\n📍 calculateCurrentPosition:`);
