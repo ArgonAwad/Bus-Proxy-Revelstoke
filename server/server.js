@@ -377,6 +377,119 @@ app.get('/api/buses', async (req, res) => {
   }
 });
 
+// Debug endpoint to see exactly what is happening with virtual position calculation
+app.get('/api/debug/virtuals-detail', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || '36';
+    const currentTimeSec = Math.floor(Date.now() / 1000);
+
+    console.log(`[DEBUG-VIRTUALS] Called | time=${currentTimeSec}`);
+
+    // Fetch trip updates
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    if (!tripResult.success) {
+      return res.status(503).json({ error: 'Trip feed unavailable' });
+    }
+
+    await ensureScheduleLoaded();
+    const schedule = scheduleLoader.scheduleData;
+    if (!schedule?.tripsMap || !schedule?.shapes || !schedule?.stops) {
+      return res.status(500).json({ error: 'Schedule incomplete' });
+    }
+
+    const debugInfo = {
+      currentTime: {
+        unix: currentTimeSec,
+        iso: new Date(currentTimeSec * 1000).toISOString()
+      },
+      scheduleStats: {
+        tripsCount: Object.keys(schedule.tripsMap).length,
+        shapesCount: Object.keys(schedule.shapes).length,
+        stopsCount: Object.keys(schedule.stops).length
+      },
+      activeVirtuals: []
+    };
+
+    tripResult.data.entity?.forEach(entity => {
+      const tu = entity.tripUpdate;
+      if (!tu?.trip?.tripId || !tu.stopTimeUpdate?.length) return;
+
+      const trip = tu.trip;
+      const stopTimes = tu.stopTimeUpdate;
+      const blockId = extractBlockIdFromTripId(trip.tripId);
+      if (!blockId) return;
+
+      const isActive = isTripCurrentlyActive(stopTimes, currentTimeSec);
+      if (!isActive) return;  // only include active ones
+
+      const info = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+      if (!info) return;
+
+      const { currentStop, nextStop, progress } = info;
+
+      const shapeId = getShapeIdFromTrip(trip.tripId, schedule);
+
+      let positionResult = null;
+      let shapeUsed = false;
+      let fallbackReason = null;
+
+      if (trip.tripId && progress > 0) {
+        positionResult = calculatePositionAlongShape(trip.tripId, progress, schedule);
+        if (positionResult) {
+          shapeUsed = true;
+        } else {
+          fallbackReason = 'No valid shape points or shape_id';
+        }
+      }
+
+      if (!positionResult && nextStop) {
+        const nextId = String(nextStop.stopId).trim();
+        const currentId = String(currentStop.stopId).trim();
+        const cCoords = schedule.stops[currentId];
+        const nCoords = schedule.stops[nextId];
+        if (cCoords && nCoords) {
+          const lat = cCoords.lat + (nCoords.lat - cCoords.lat) * progress;
+          const lon = cCoords.lon + (nCoords.lon - cCoords.lon) * progress;
+          const bearing = calculateBearing(cCoords.lat, cCoords.lon, nCoords.lat, nCoords.lon);
+          positionResult = { latitude: lat, longitude: lon, bearing, speed: 25 };
+          fallbackReason = 'Linear between stops (shape failed)';
+        } else {
+          fallbackReason = 'No stop coordinates';
+        }
+      }
+
+      if (!positionResult) {
+        const coords = schedule.stops[String(currentStop.stopId).trim()];
+        positionResult = coords
+          ? { latitude: coords.lat, longitude: coords.lon, bearing: null, speed: 0 }
+          : { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
+        fallbackReason = fallbackReason || 'Ultimate fallback (no data)';
+      }
+
+      debugInfo.activeVirtuals.push({
+        blockId,
+        tripId: trip.tripId,
+        routeId: trip.routeId,
+        directionId: trip.directionId,
+        startTime: trip.startTime,
+        isActive: isActive,
+        progress: progress.toFixed(4),
+        currentStop: currentStop.stopId,
+        nextStop: nextStop?.stopId || null,
+        shapeId,
+        shapeUsed,
+        fallbackReason,
+        position: positionResult
+      });
+    });
+
+    res.json(debugInfo);
+  } catch (err) {
+    console.error('[DEBUG-VIRTUALS] Error:', err);
+    res.status(500).json({ error: 'Debug failed', details: err.message });
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
