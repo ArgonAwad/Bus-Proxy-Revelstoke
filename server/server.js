@@ -11,7 +11,6 @@ import {
   isTripCurrentlyActive,
   findCurrentStopAndProgress,
   calculateCurrentPosition,
-  calculateBearing,
   getRouteDisplayName
 } from './virtual-vehicles.js';
 
