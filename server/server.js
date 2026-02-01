@@ -516,6 +516,86 @@ app.get('/api/debug/simulate-time', (req, res) => {
 });
 
 // All your original debug endpoints
+app.get('/api/debug/updater-status', (req, res) => {
+  const status = virtualUpdater.getStatus();
+  res.json({
+    updater: status,
+    note: status.isRunning ? 'Updater is active - virtuals should update every ' + status.updateInterval / 1000 + ' seconds' : 'Updater NOT running - virtuals won\'t move. Try /api/debug/start-updater'
+  });
+});
+
+app.get('/api/debug/start-updater', (req, res) => {
+  try {
+    virtualUpdater.start();
+    res.json({
+      status: 'started',
+      note: 'Updater forced to start. Check /api/debug/updater-status to confirm isRunning: true. Virtuals should now advance over time.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to start updater: ' + err.message });
+  }
+});
+
+app.get('/api/debug/force-create-virtuals', async (req, res) => {
+  try {
+    const allVirtuals = req.query.all === 'true';
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', DEFAULT_OPERATOR_ID);
+    if (!tripResult.success) return res.status(503).json({ error: 'Trip feed unavailable' });
+
+    await ensureScheduleLoaded(); // From previous changes
+
+    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data.entity || []);
+    const expectedBlocks = getExpectedBlockIdsFromTripUpdates(processedTrips);
+
+    virtualVehicleManager.virtualVehicles.clear(); // Reset for testing
+
+    const virtualEntities = [];
+    expectedBlocks.forEach(blockId => {
+      // Find a trip for this block
+      const entity = processedTrips.find(e => extractBlockIdFromTripId(e.tripUpdate.trip.tripId) === blockId);
+      if (!entity) return;
+
+      const tu = entity.tripUpdate;
+      const virtualEntity = virtualVehicleManager.createVirtualVehicle(
+        tu.trip,
+        tu.stopTimeUpdate || [],
+        scheduleLoader.scheduleData,
+        `DEBUG-VIRT-${blockId}`,
+        allVirtuals ? 'AllScheduled' : 'Substitute'
+      );
+
+      if (virtualEntity) {
+        virtualVehicleManager.updateVehiclePosition(virtualEntity, scheduleLoader.scheduleData);
+        virtualEntities.push(virtualEntity);
+      }
+    });
+
+    res.json({
+      status: 'created',
+      generated: virtualEntities.length,
+      note: 'Virtuals forced recreated. Check /api/debug/virtual-state for positions/progress.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to force create virtuals: ' + err.message });
+  }
+});
+
+app.get('/api/debug/force-update-positions', async (req, res) => {
+  try {
+    await ensureScheduleLoaded();
+    const result = virtualVehicleManager.updateVirtualPositions(scheduleLoader.scheduleData);
+    res.json({
+      status: 'updated',
+      updated_count: result.updated,
+      removed_count: result.removed,
+      total_virtuals: virtualVehicleManager.virtualVehicles.size,
+      note: 'Positions forced updated. Check /api/debug/virtual-state for new progress/positions.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to force update positions: ' + err.message });
+  }
+});
+
 app.get('/api/debug/schedule-status', async (req, res) => {
   try {
     await scheduleLoader.loadSchedules();
