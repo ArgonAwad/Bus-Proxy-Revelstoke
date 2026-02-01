@@ -415,44 +415,65 @@ class VirtualVehicleManager {
   }
 
   findCurrentStopAndProgress(stopTimes, currentTimeSec) {
-  console.log(`\n🔍 findCurrentStopAndProgress called | stops: ${stopTimes?.length || 0} | now: ${currentTimeSec}`);
+  console.log(`\n🔍 findCurrentStopAndProgress called | stops: ${stopTimes?.length || 0} | unix now: ${currentTimeSec}`);
 
   if (!stopTimes || stopTimes.length === 0) {
-    console.log('❌ No stop times');
+    console.log('❌ No stop times provided');
     return null;
   }
 
-  // Helper: safely parse time (handle string or number)
-  const parseTime = (time) => {
-    if (!time) return null;
-    const num = Number(time);
-    return isNaN(num) ? null : num;
+  // Helper: Convert GTFS "HH:MM:SS" string (possibly >24:00) to seconds since midnight
+  const timeToSeconds = (timeStr) => {
+    if (!timeStr || typeof timeStr !== 'string') return null;
+    let [hours, minutes, seconds = 0] = timeStr.split(':').map(Number);
+    if (isNaN(hours) || isNaN(minutes)) return null;
+    // Handle overnight times (GTFS allows >24:00)
+    const extraDays = Math.floor(hours / 24);
+    hours = hours % 24;
+    return extraDays * 86400 + hours * 3600 + minutes * 60 + seconds;
   };
 
-  // Convert all stop times to numbers once
+  // Force timezone to Revelstoke (America/Vancouver = PST/PDT)
+  const nowUTC = new Date(currentTimeSec * 1000);
+  // PST = UTC-8 (simple offset; DST auto-handled by toLocaleString)
+  const localDate = new Date(nowUTC.toLocaleString('en-US', { timeZone: 'America/Vancouver' }));
+  const currentSecondsToday = localDate.getHours() * 3600 +
+                              localDate.getMinutes() * 60 +
+                              localDate.getSeconds();
+
+  console.log(`[TIME DEBUG] Server UTC: ${nowUTC.toISOString()}`);
+  console.log(`[TIME DEBUG] Local PST/PDT: ${localDate.toLocaleString('en-CA', { timeZone: 'America/Vancouver' })} (${currentSecondsToday}s since midnight local)`);
+
+  // Log first and last stop times for comparison
+  const firstTimeStr = stopTimes[0]?.departure?.time || stopTimes[0]?.arrival?.time || 'none';
+  const lastTimeStr = stopTimes[stopTimes.length - 1]?.departure?.time || stopTimes[stopTimes.length - 1]?.arrival?.time || 'none';
+  console.log(`[TIME DEBUG] First stop time string: ${firstTimeStr}`);
+  console.log(`[TIME DEBUG] Last stop time string: ${lastTimeStr}`);
+
+  // Parse all stop times to seconds
   const stopsWithTimes = stopTimes.map((st, idx) => {
-    const arrival = parseTime(st.arrival?.time);
-    const departure = parseTime(st.departure?.time);
-    const effectiveTime = departure ?? arrival ?? null;
+    const arrivalSec = timeToSeconds(st.arrival?.time);
+    const departureSec = timeToSeconds(st.departure?.time);
+    const effectiveSec = departureSec ?? arrivalSec ?? null;
     return {
       idx,
       stop: st,
-      arrival,
-      departure,
-      effectiveTime,  // time when bus leaves this stop
+      arrivalSec,
+      departureSec,
+      effectiveSec,
       isFirst: idx === 0,
       isLast: idx === stopTimes.length - 1
     };
   });
 
-  const firstDeparture = stopsWithTimes[0]?.effectiveTime;
-  const lastDeparture = stopsWithTimes[stopTimes.length - 1]?.effectiveTime;
+  const firstDepartureSec = stopsWithTimes[0]?.effectiveSec;
+  const lastDepartureSec = stopsWithTimes[stopTimes.length - 1]?.effectiveSec;
 
-  console.log(`First departure: ${firstDeparture}, Last: ${lastDeparture}`);
+  console.log(`[TIME DEBUG] First departure seconds: ${firstDepartureSec}, Last: ${lastDepartureSec}`);
 
-  // Before trip starts
-  if (firstDeparture && currentTimeSec < firstDeparture - 300) { // 5 min buffer
-    console.log(`⏳ Before start - at first stop`);
+  // Before trip starts (5 min buffer before first departure)
+  if (firstDepartureSec !== null && currentSecondsToday < firstDepartureSec - 300) {
+    console.log(`⏳ Before start - at first stop (current: ${currentSecondsToday}s < ${firstDepartureSec - 300}s)`);
     return {
       currentStop: stopTimes[0],
       nextStop: stopTimes[1] || null,
@@ -461,9 +482,9 @@ class VirtualVehicleManager {
     };
   }
 
-  // After trip ends (15 min buffer)
-  if (lastDeparture && currentTimeSec > lastDeparture + 900) {
-    console.log(`🏁 Trip ended`);
+  // After trip ends (15 min buffer after last departure)
+  if (lastDepartureSec !== null && currentSecondsToday > lastDepartureSec + 900) {
+    console.log(`🏁 Trip ended (current: ${currentSecondsToday}s > ${lastDepartureSec + 900}s)`);
     return {
       currentStop: stopTimes[stopTimes.length - 1],
       nextStop: null,
@@ -472,28 +493,27 @@ class VirtualVehicleManager {
     };
   }
 
-  // Find the segment we're in
+  // Find current segment
   for (let i = 0; i < stopsWithTimes.length - 1; i++) {
     const current = stopsWithTimes[i];
     const next = stopsWithTimes[i + 1];
 
-    const departTime = current.effectiveTime;
-    const arriveNext = next.arrival ?? next.effectiveTime;
+    const departSec = current.effectiveSec;
+    const arriveSec = next.arrivalSec ?? next.effectiveSec;
 
-    if (departTime === null || arriveNext === null) continue;
+    if (departSec === null || arriveSec === null) continue;
 
-    // If we're between departure from current and arrival at next
-    if (currentTimeSec >= departTime && currentTimeSec <= arriveNext) {
-      const duration = arriveNext - departTime;
-      const elapsed = currentTimeSec - departTime;
+    if (currentSecondsToday >= departSec && currentSecondsToday <= arriveSec) {
+      const duration = arriveSec - departSec;
+      const elapsed = currentSecondsToday - departSec;
       let progress = duration > 0 ? elapsed / duration : 0;
 
-      // Small dwell realism: stay at stop for first 30s of segment
+      // Small dwell realism: stay at stop for first 30 seconds of segment
       if (progress < 30 / duration) progress = 0;
 
       progress = Math.max(0, Math.min(1, progress));
 
-      console.log(`✅ In segment ${i} → ${i+1} | depart: ${departTime} arrive: ${arriveNext} | elapsed: ${elapsed}/${duration} | progress: ${progress.toFixed(3)}`);
+      console.log(`✅ In segment ${i} → ${i+1} | depart: ${departSec}s arrive: ${arriveSec}s | elapsed: ${elapsed}/${duration} | progress: ${progress.toFixed(3)}`);
 
       return {
         currentStop: current.stop,
@@ -504,16 +524,16 @@ class VirtualVehicleManager {
     }
   }
 
-  // Fallback: nearest upcoming stop
+  // Fallback: approaching next stop
   for (let i = 0; i < stopsWithTimes.length; i++) {
     const st = stopsWithTimes[i];
-    if (st.effectiveTime && currentTimeSec < st.effectiveTime) {
-      const prev = i > 0 ? stopsWithTimes[i-1] : null;
-      if (prev) {
-        const departPrev = prev.effectiveTime;
-        const arriveHere = st.arrival ?? st.effectiveTime;
+    if (st.effectiveSec && currentSecondsToday < st.effectiveSec) {
+      const prev = i > 0 ? stopsWithTimes[i - 1] : null;
+      if (prev && prev.effectiveSec) {
+        const departPrev = prev.effectiveSec;
+        const arriveHere = st.arrivalSec ?? st.effectiveSec;
         const duration = arriveHere - departPrev;
-        const elapsed = currentTimeSec - departPrev;
+        const elapsed = currentSecondsToday - departPrev;
         let progress = duration > 0 ? elapsed / duration : 0;
         progress = Math.max(0, Math.min(1, progress));
         console.log(`➡️ Approaching stop ${st.stop.stopId} | progress ${progress.toFixed(3)}`);
