@@ -1,7 +1,7 @@
 // virtual-vehicles.js — complete minimal helper functions for on-demand virtual positions
 
 // 1. Extract block ID from trip ID (last numeric part after colon)
-export function extractBlockIdFromTripId(tripId) {
+function extractBlockIdFromTripId(tripId) {
   if (!tripId || typeof tripId !== 'string') return null;
   const parts = tripId.split(':');
   if (parts.length >= 3) {
@@ -12,7 +12,7 @@ export function extractBlockIdFromTripId(tripId) {
 }
 
 // 2. Get shape ID from trip (match by block_id, fallback to first shape)
-export function getShapeIdFromTrip(tripId, scheduleData) {
+function getShapeIdFromTrip(tripId, scheduleData) {
   if (!scheduleData?.tripsMap) {
     console.log('[getShapeIdFromTrip] No tripsMap in scheduleData');
     return null;
@@ -40,7 +40,7 @@ export function getShapeIdFromTrip(tripId, scheduleData) {
 }
 
 // 3. Check if trip is active now (±5 min buffer)
-export function isTripCurrentlyActive(stopTimes, currentTimeSec) {
+function isTripCurrentlyActive(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length < 2) return false;
 
   const getTime = (st) => Number(st.departure?.time || st.arrival?.time || 0);
@@ -115,7 +115,7 @@ export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
 }
 
 // 5. Calculate position along shape (preferred) or linear fallback
-export function calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
+function calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
   if (!scheduleData?.stops) {
     console.log('[POSITION] No stops in scheduleData → fallback');
     return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
@@ -159,7 +159,7 @@ export function calculateCurrentPosition(currentStop, nextStop, progress, schedu
 }
 
 // 6. Interpolate position along shape (distance-based or uniform)
-export function calculatePositionAlongShape(tripId, progress, scheduleData) {
+function calculatePositionAlongShape(tripId, progress, scheduleData) {
   const trip = scheduleData.tripsMap?.[tripId];
   if (!trip?.shape_id) {
     console.log(`[SHAPE] No trip or shape_id for ${tripId}`);
@@ -214,7 +214,7 @@ export function calculatePositionAlongShape(tripId, progress, scheduleData) {
 }
 
 // 7. Bearing calculation
-export function calculateBearing(lat1, lon1, lat2, lon2) {
+function calculateBearing(lat1, lon1, lat2, lon2) {
   const toRad = deg => deg * Math.PI / 180;
   const φ1 = toRad(lat1), φ2 = toRad(lat2);
   const Δλ = toRad(lon2 - lon1);
@@ -226,7 +226,7 @@ export function calculateBearing(lat1, lon1, lat2, lon2) {
 }
 
 // 8. Route label helper
-export function getRouteDisplayName(routeId) {
+function getRouteDisplayName(routeId) {
   if (!routeId) return 'Bus';
   const match = routeId.match(/^(\d+)/);
   return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
