@@ -22,6 +22,32 @@ let root = null;
 // Global time offset for debugging virtual bus movement (simulate future time)
 let timeOffsetSeconds = 0;
 
+// Helper: Ensure schedule is loaded before using it
+async function ensureScheduleLoaded() {
+  if (!scheduleLoader.scheduleData || 
+      !scheduleLoader.scheduleData.tripsMap || 
+      Object.keys(scheduleLoader.scheduleData.tripsMap).length === 0) {
+    console.log('[ensureSchedule] Schedule empty - forcing reload...');
+    try {
+      await scheduleLoader.loadSchedules();
+      const counts = {
+        trips: Object.keys(scheduleLoader.scheduleData?.tripsMap || {}).length,
+        stops: Object.keys(scheduleLoader.scheduleData?.stops || {}).length,
+        shapes: Object.keys(scheduleLoader.scheduleData?.shapes || {}).length
+      };
+      console.log('[ensureSchedule] Reload complete:', counts);
+      if (counts.trips === 0) {
+        console.warn('[ensureSchedule] WARNING: Still 0 trips after reload!');
+      }
+    } catch (err) {
+      console.error('[ensureSchedule] Reload failed:', err.message);
+      throw new Error('Schedule reload failed: ' + err.message);
+    }
+  } else {
+    console.log('[ensureSchedule] Schedule already loaded');
+  }
+}
+
 // Load and parse the GTFS .proto schema
 async function loadProto() {
   try {
