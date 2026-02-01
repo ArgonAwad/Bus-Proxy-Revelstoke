@@ -328,6 +328,7 @@ class VirtualVehicleManager {
       nextStop,
       progress,
       scheduleData,
+      this.scheduleData,
       trip.tripId
     );
     
@@ -682,7 +683,7 @@ class VirtualVehicleManager {
       currentStop,
       nextStop,
       progress,
-      scheduleData,
+      scheduleData || this.scheduleData,
       vehicle.vehicle.trip.tripId
     );
     
