@@ -465,6 +465,299 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
   }
 });
 
+// Add this endpoint to your server.js file
+
+// Time verification endpoint
+app.get('/api/debug/time-verification', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    // Get times from different sources
+    const now = new Date();
+    const serverTimeISO = now.toISOString();
+    const serverTimeLocal = now.toString();
+    const serverTimeUTC = now.toUTCString();
+    const serverTimeMs = Date.now();
+    const serverTimeSec = Math.floor(serverTimeMs / 1000);
+    
+    // Fetch trip updates to see what timestamps they contain
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    // Get header timestamp from GTFS feed if available
+    let feedTimestampSec = null;
+    let feedTimestampISO = null;
+    let feedHeader = null;
+    
+    if (tripResult.success && tripResult.data?.header) {
+      feedHeader = tripResult.data.header;
+      feedTimestampSec = feedHeader.timestamp;
+      if (feedTimestampSec) {
+        feedTimestampISO = new Date(feedTimestampSec * 1000).toISOString();
+      }
+    }
+    
+    // Find a sample trip to analyze its timing
+    let sampleTrip = null;
+    let sampleStopTimes = null;
+    
+    if (tripResult.success && tripResult.data?.entity) {
+      // Find first trip update with stop times
+      const tripUpdate = tripResult.data.entity.find(e => 
+        e.tripUpdate?.stopTimeUpdate?.length > 0
+      );
+      
+      if (tripUpdate) {
+        sampleTrip = tripUpdate.tripUpdate.trip;
+        sampleStopTimes = tripUpdate.tripUpdate.stopTimeUpdate.map(st => ({
+          stopId: st.stopId,
+          arrivalTime: st.arrival?.time,
+          arrivalTimeISO: st.arrival?.time ? new Date(st.arrival.time * 1000).toISOString() : null,
+          departureTime: st.departure?.time,
+          departureTimeISO: st.departure?.time ? new Date(st.departure.time * 1000).toISOString() : null,
+          stopSequence: st.stopSequence
+        }));
+      }
+    }
+    
+    // Calculate time differences
+    const timeDifferences = {
+      serverVsFeed: feedTimestampSec ? serverTimeSec - feedTimestampSec : null,
+      serverVsNow: 0, // Should be 0
+      clientRequestTime: req.headers['x-request-time'] || 'Not provided'
+    };
+    
+    // Test trip activity check with current time
+    let activityCheckResult = null;
+    if (sampleStopTimes) {
+      const stopTimes = tripResult.data.entity[0]?.tripUpdate?.stopTimeUpdate || [];
+      const isActive = isTripCurrentlyActive(stopTimes, serverTimeSec);
+      
+      // Also check with ±30 seconds to see sensitivity
+      const isActivePlus30 = isTripCurrentlyActive(stopTimes, serverTimeSec + 30);
+      const isActiveMinus30 = isTripCurrentlyActive(stopTimes, serverTimeSec - 30);
+      
+      activityCheckResult = {
+        currentTimeCheck: isActive,
+        plus30Seconds: isActivePlus30,
+        minus30Seconds: isActiveMinus30,
+        sensitivity: isActivePlus30 !== isActive || isActiveMinus30 !== isActive ? 
+          "SENSITIVE (±30s changes result)" : "STABLE (±30s same result)",
+        currentStopInfo: findCurrentStopAndProgress(stopTimes, serverTimeSec)
+      };
+    }
+    
+    const response = {
+      metadata: {
+        operatorId,
+        requestedAt: new Date().toISOString(),
+        endpoint: '/api/debug/time-verification',
+        purpose: "Verify time consistency for virtual bus calculations"
+      },
+      
+      // TIME VARIABLES USED IN CALCULATIONS
+      timeVariables: {
+        // This is what your code uses for calculations:
+        currentTimeSec: serverTimeSec,
+        
+        // Derived formats for verification:
+        currentTimeISO: new Date(serverTimeSec * 1000).toISOString(),
+        currentTimeReadable: new Date(serverTimeSec * 1000).toString(),
+        currentTimeUTC: new Date(serverTimeSec * 1000).toUTCString(),
+        
+        // Your device/system time at moment of request:
+        systemTime: {
+          milliseconds: serverTimeMs,
+          iso: serverTimeISO,
+          local: serverTimeLocal,
+          utc: serverTimeUTC
+        },
+        
+        // Time from GTFS feed header:
+        feedTime: {
+          seconds: feedTimestampSec,
+          iso: feedTimestampISO,
+          source: feedHeader ? 'GTFS-RT feed header' : 'No feed available'
+        }
+      },
+      
+      // TIME DIFFERENCES AND CONSISTENCY
+      consistencyCheck: {
+        differences: {
+          serverVsFeedSeconds: timeDifferences.serverVsFeed,
+          serverVsFeedReadable: timeDifferences.serverVsFeed ? 
+            `${Math.abs(timeDifferences.serverVsFeed)} seconds ${timeDifferences.serverVsFeed > 0 ? 'ahead of' : 'behind'} feed` : 'N/A',
+          within30Seconds: timeDifferences.serverVsFeed ? 
+            Math.abs(timeDifferences.serverVsFeed) <= 30 : null
+        },
+        assessment: timeDifferences.serverVsFeed ? 
+          (Math.abs(timeDifferences.serverVsFeed) <= 30 ? 
+            "✅ TIMES ARE CONSISTENT (within 30 seconds)" :
+            `⚠️ TIMES DIFFER BY ${Math.abs(timeDifferences.serverVsFeed)} SECONDS`) :
+          "⚠️ CANNOT VERIFY (no feed timestamp)"
+      },
+      
+      // SAMPLE TRIP ANALYSIS
+      sampleAnalysis: sampleTrip ? {
+        tripId: sampleTrip.tripId,
+        routeId: sampleTrip.routeId,
+        startTime: sampleTrip.startTime,
+        startDate: sampleTrip.startDate,
+        blockId: extractBlockIdFromTripId(sampleTrip.tripId),
+        
+        // First and last stop times
+        firstStop: sampleStopTimes[0] ? {
+          stopId: sampleStopTimes[0].stopId,
+          departureTime: sampleStopTimes[0].departureTime,
+          departureISO: sampleStopTimes[0].departureTimeISO,
+          relativeToNow: sampleStopTimes[0].departureTime ? 
+            `${serverTimeSec - sampleStopTimes[0].departureTime} seconds ${serverTimeSec > sampleStopTimes[0].departureTime ? 'after' : 'before'} departure` : 'N/A'
+        } : null,
+        
+        lastStop: sampleStopTimes[sampleStopTimes.length - 1] ? {
+          stopId: sampleStopTimes[sampleStopTimes.length - 1].stopId,
+          arrivalTime: sampleStopTimes[sampleStopTimes.length - 1].arrivalTime,
+          arrivalISO: sampleStopTimes[sampleStopTimes.length - 1].arrivalTimeISO,
+          relativeToNow: sampleStopTimes[sampleStopTimes.length - 1].arrivalTime ? 
+            `${serverTimeSec - sampleStopTimes[sampleStopTimes.length - 1].arrivalTime} seconds ${serverTimeSec > sampleStopTimes[sampleStopTimes.length - 1].arrivalTime ? 'after' : 'before'} arrival` : 'N/A'
+        } : null,
+        
+        // Activity check results
+        activityCheck: activityCheckResult
+      } : null,
+      
+      // RECOMMENDATIONS
+      recommendations: (() => {
+        const recs = [];
+        
+        if (timeDifferences.serverVsFeed && Math.abs(timeDifferences.serverVsFeed) > 30) {
+          recs.push("Server time differs significantly from feed time. Consider using feed timestamp as reference.");
+        }
+        
+        if (!feedTimestampSec) {
+          recs.push("Feed doesn't provide timestamp. Using server time may cause inconsistencies.");
+        }
+        
+        if (activityCheckResult?.sensitivity === "SENSITIVE (±30s changes result)") {
+          recs.push("Trip activity is time-sensitive. Small time differences will affect virtual bus generation.");
+        }
+        
+        if (recs.length === 0) {
+          recs.push("Time consistency looks good. Check shape interpolation if buses still fluctuate.");
+        }
+        
+        return recs;
+      })()
+    };
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('[TIME-VERIFICATION] Error:', error);
+    res.status(500).json({
+      error: 'Failed to verify time consistency',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Test specific trip with time analysis
+app.get('/api/debug/test-trip-activity', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const tripId = req.query.tripId;
+    
+    if (!tripId) {
+      return res.status(400).json({ error: 'tripId parameter required' });
+    }
+    
+    const currentTimeSec = Math.floor(Date.now() / 1000);
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!tripResult.success) {
+      return res.status(503).json({ error: 'Trip feed unavailable' });
+    }
+    
+    // Find the specific trip
+    const tripEntity = tripResult.data.entity?.find(e => 
+      e.tripUpdate?.trip?.tripId === tripId
+    );
+    
+    if (!tripEntity) {
+      return res.status(404).json({ error: `Trip ${tripId} not found in feed` });
+    }
+    
+    const stopTimes = tripEntity.tripUpdate.stopTimeUpdate;
+    const trip = tripEntity.tripUpdate.trip;
+    
+    // Test with multiple time points
+    const testTimes = [
+      { label: 'Current', offset: 0 },
+      { label: '-60 seconds', offset: -60 },
+      { label: '-30 seconds', offset: -30 },
+      { label: '+30 seconds', offset: 30 },
+      { label: '+60 seconds', offset: 60 },
+      { label: '+5 minutes', offset: 300 },
+      { label: '-5 minutes', offset: -300 }
+    ];
+    
+    const testResults = testTimes.map(test => {
+      const testTimeSec = currentTimeSec + test.offset;
+      const isActive = isTripCurrentlyActive(stopTimes, testTimeSec);
+      const stopInfo = findCurrentStopAndProgress(stopTimes, testTimeSec);
+      
+      return {
+        testTimeLabel: test.label,
+        testTimeSec,
+        testTimeISO: new Date(testTimeSec * 1000).toISOString(),
+        isActive,
+        currentStop: stopInfo?.currentStop?.stopId,
+        nextStop: stopInfo?.nextStop?.stopId,
+        progress: stopInfo?.progress?.toFixed(4),
+        relativeToNow: `${test.offset > 0 ? '+' : ''}${test.offset} seconds`
+      };
+    });
+    
+    // Get stop time details
+    const stopDetails = stopTimes.map(st => ({
+      stopId: st.stopId,
+      arrivalTime: st.arrival?.time,
+      arrivalISO: st.arrival?.time ? new Date(st.arrival.time * 1000).toISOString() : null,
+      departureTime: st.departure?.time,
+      departureISO: st.departure?.time ? new Date(st.departure.time * 1000).toISOString() : null,
+      stopSequence: st.stopSequence
+    }));
+    
+    res.json({
+      tripId,
+      routeId: trip.routeId,
+      blockId: extractBlockIdFromTripId(tripId),
+      currentTime: {
+        seconds: currentTimeSec,
+        iso: new Date(currentTimeSec * 1000).toISOString(),
+        readable: new Date(currentTimeSec * 1000).toString()
+      },
+      stopCount: stopTimes.length,
+      stopDetails,
+      timeSensitivityTest: testResults,
+      analysis: {
+        firstStopTime: stopDetails[0]?.departureTime || stopDetails[0]?.arrivalTime,
+        lastStopTime: stopDetails[stopDetails.length - 1]?.arrivalTime || stopDetails[stopDetails.length - 1]?.departureTime,
+        tripDurationSeconds: (stopDetails[stopDetails.length - 1]?.arrivalTime || stopDetails[stopDetails.length - 1]?.departureTime) - 
+                           (stopDetails[0]?.departureTime || stopDetails[0]?.arrivalTime),
+        isCurrentlyActive: isTripCurrentlyActive(stopTimes, currentTimeSec)
+      }
+    });
+    
+  } catch (error) {
+    console.error('[TEST-TRIP] Error:', error);
+    res.status(500).json({
+      error: 'Failed to test trip activity',
+      details: error.message
+    });
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
