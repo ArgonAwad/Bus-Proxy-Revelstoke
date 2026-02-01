@@ -1,4 +1,4 @@
-export function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
+function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length === 0) return null;
   const stops = stopTimes.map((st, idx) => ({
     idx,
