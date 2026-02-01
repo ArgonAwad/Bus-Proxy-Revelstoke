@@ -384,71 +384,114 @@ app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const allVirtuals = req.query.all_virtuals === 'true';
+    const currentTimeSec = Math.floor(Date.now() / 1000);  // Current Unix time
     const startTime = Date.now();
-    console.log(`[${new Date().toISOString()}] /api/virtuals called | operator=${operatorId} | all_virtuals=${allVirtuals}`);
+    console.log(`[${new Date().toISOString()}] /api/virtuals called | operator=${operatorId} | all_virtuals=${allVirtuals} | time=${currentTimeSec}`);
 
-    // Fetch real feeds (for reference/active blocks)
-    const [vehicleResult, tripResult] = await Promise.all([
-      fetchGTFSFeed('vehicleupdates.pb', operatorId),
-      fetchGTFSFeed('tripupdates.pb', operatorId)
-    ]);
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    if (!tripResult.success) return res.status(503).json({ error: 'Trip feed unavailable' });
 
-    if (!vehicleResult.success || !tripResult.success) {
-      return res.status(503).json({
-        error: 'Feeds unavailable',
-        vehicle_success: vehicleResult.success,
-        trip_success: tripResult.success
-      });
-    }
-
-    const processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data?.entity || []);
-    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data?.entity || []);
-
+    const processedTrips = addParsedBlockIdToTripUpdates(tripResult.data.entity || []);
     const expectedBlocks = getExpectedBlockIdsFromTripUpdates(processedTrips);
-    const activeRealBlocks = getActiveRealBlockIds(processedVehicles);
 
     await ensureScheduleLoaded();
 
-    const blocksToUse = allVirtuals
-      ? expectedBlocks
-      : expectedBlocks.filter(b => !activeRealBlocks.has(b));
+    const virtualEntities = [];
 
-    // Use ALL persisted virtuals from manager (these have been updated by background loop)
-    let virtualEntities = Array.from(virtualVehicleManager.virtualVehicles.values())
-      .filter(v => {
-        const blockId = extractBlockIdFromTripId(v.vehicle?.trip?.tripId);
-        return blockId && blocksToUse.includes(blockId);
-      });
-
-    console.log(`Returning ${virtualEntities.length} persisted virtual vehicles (updated by background)`);
-
-    // If some blocks are missing, create them (rare after force-create)
-    const seenBlocks = new Set(virtualEntities.map(v => extractBlockIdFromTripId(v.vehicle?.trip?.tripId)));
     processedTrips.forEach(entity => {
       const tu = entity.tripUpdate;
       if (!tu) return;
-      const tripId = tu.trip?.tripId;
-      const blockId = extractBlockIdFromTripId(tripId);
-      if (!blockId || !blocksToUse.includes(blockId) || seenBlocks.has(blockId)) return;
+      const trip = tu.trip;
+      const stopTimes = tu.stopTimeUpdate || [];
+      if (!trip || !trip.tripId || stopTimes.length === 0) return;
 
-      seenBlocks.add(blockId);
+      const blockId = extractBlockIdFromTripId(trip.tripId);
 
-      const virtualEntity = virtualVehicleManager.createVirtualVehicle(
-        tu.trip,
-        tu.stopTimeUpdate || [],
-        scheduleLoader.scheduleData,
-        `VIRT-${allVirtuals ? 'ALL-' : ''}${blockId}`,
-        allVirtuals ? 'AllScheduled' : 'Substitute'
-      );
+      // Skip if not in all mode and block is real
+      if (!allVirtuals && activeRealBlocks.has(blockId)) return;
 
-      if (virtualEntity) {
-        virtualVehicleManager.updateVehiclePosition(virtualEntity, scheduleLoader.scheduleData);
+      // Check if trip is active now
+      if (this.isTripCurrentlyActive(stopTimes, currentTimeSec)) {
+        const currentStopInfo = this.findCurrentStopAndProgress(stopTimes, currentTimeSec);
+        if (!currentStopInfo) return;
+
+        const { currentStop, nextStop, progress } = currentStopInfo;
+
+        const position = this.calculateCurrentPosition(currentStop, nextStop, progress, scheduleLoader.scheduleData, trip.tripId);
+
+        const shapeId = this.getShapeIdFromTrip(trip.tripId, scheduleLoader.scheduleData);
+
+        const virtualEntity = {
+          id: `VIRT-${allVirtuals ? 'ALL-' : ''}${blockId}`,
+          isDeleted: false,
+          tripUpdate: null,
+          vehicle: {
+            trip: {
+              tripId: trip.tripId,
+              startTime: trip.startTime,
+              startDate: trip.startDate,
+              scheduleRelationship: 0,
+              routeId: trip.routeId,
+              directionId: trip.directionId || 0,
+              modifiedTrip: null,
+              blockId: blockId
+            },
+            position: {
+              latitude: position.latitude,
+              longitude: position.longitude,
+              bearing: position.bearing,
+              odometer: 0,
+              speed: position.speed
+            },
+            currentStopSequence: currentStop.stopSequence || 1,
+            currentStatus: progress === 0 ? 1 : 2,
+            timestamp: currentTimeSec,
+            congestionLevel: 0,
+            stopId: currentStop.stopId,
+            vehicle: {
+              id: `VIRT-${allVirtuals ? 'ALL-' : ''}${blockId}`,
+              label: `Ghost Bus ${trip.routeId.split('-')[0]}`,
+              licensePlate: "",
+              wheelchairAccessible: 0,
+              is_virtual: true,
+              virtual_mode: allVirtuals ? 'AllScheduled' : 'Substitute',
+              original_trip_id: trip.tripId
+            },
+            occupancyStatus: 0,
+            occupancyPercentage: 0,
+            multiCarriageDetails: [],
+            progress: progress
+          },
+          alert: null,
+          shape: null,
+          stop: null,
+          tripModifications: null,
+          lastUpdated: Date.now(),
+          stopTimes: stopTimes,
+          currentStop: currentStop,
+          nextStop: nextStop,
+          modeType: allVirtuals ? 'AllScheduled' : 'Substitute',
+          _metadata: {
+            progress: progress,
+            shapeId: shapeId,
+            lastUpdate: Date.now(),
+            startTime: currentTimeSec,
+            stopTimes: stopTimes,
+            currentStop: currentStop,
+            nextStop: nextStop,
+            currentStopInfo: currentStopInfo,
+            positionHistory: [{
+              lat: position.latitude,
+              lng: position.longitude,
+              time: currentTimeSec,
+              progress: progress
+            }]
+          }
+        };
+
         virtualEntities.push(virtualEntity);
       }
     });
-
-    // Final update pass before response
-    virtualVehicleManager.updateVirtualPositions(scheduleLoader.scheduleData);
 
     const responseTime = Date.now() - startTime;
     res.json({
@@ -459,28 +502,24 @@ app.get('/api/virtuals', async (req, res) => {
         mode: allVirtuals ? 'all_scheduled' : 'missing_only',
         total_scheduled_blocks: expectedBlocks.length,
         real_active_blocks: activeRealBlocks.size,
-        virtuals_generated: virtualEntities.length,
-        virtuals_from_manager: virtualEntities.length
+        virtuals_generated: virtualEntities.length
       },
       data: {
         virtual_positions: {
           header: {
             gtfs_realtime_version: "2.0",
             incrementality: "FULL_DATASET",
-            timestamp: Math.floor(Date.now() / 1000)
+            timestamp: currentTimeSec
           },
           entity: virtualEntities
         }
       }
     });
 
-    console.log(`Returned ${virtualEntities.length} virtual positions`);
+    console.log(`Returned ${virtualEntities.length} virtual positions (computed on-the-fly)`);
   } catch (error) {
     console.error('Error in /api/virtuals:', error);
-    res.status(500).json({
-      error: 'Failed to generate virtuals',
-      details: error.message
-    });
+    res.status(500).json({ error: 'Failed to generate virtuals', details: error.message });
   }
 });
 
