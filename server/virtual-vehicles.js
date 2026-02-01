@@ -44,40 +44,55 @@ function getShapeIdFromTrip(tripId, scheduleData) {
 // 3. Check if trip is active now (±5 min buffer)
 function isTripCurrentlyActive(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length < 2) return false;
+
   const getTime = (st) => Number(st.departure?.time || st.arrival?.time || 0);
   const first = getTime(stopTimes[0]);
   const last = getTime(stopTimes[stopTimes.length - 1]);
+
   if (!first || !last || isNaN(first) || isNaN(last)) return false;
-  const buffer = 300;
+
+  const buffer = 300; // 5 min
   return currentTimeSec >= first - buffer && currentTimeSec <= last + buffer;
 }
 
 // 4. Find current stop, next stop, and progress (0–1) — no artificial dwell
 function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length === 0) return null;
+
   const stops = stopTimes.map((st, idx) => ({
     idx,
     stop: st,
     time: Number(st.departure?.time || st.arrival?.time || 0)
-  }));
+  })).filter(s => s.time > 0); // skip invalid/zero times
+
+  if (stops.length === 0) return null;
+
   const firstTime = stops[0].time;
   const lastTime = stops[stops.length - 1].time;
-  if (isNaN(firstTime) || isNaN(lastTime)) return null;
 
-  // Before trip starts
-  if (currentTimeSec < firstTime) {
-    return { currentStop: stopTimes[0], nextStop: stopTimes[1] || null, progress: 0 };
+  // Before trip starts (allow small negative buffer)
+  if (currentTimeSec < firstTime - 300) {  // 5 min buffer
+    return {
+      currentStop: stopTimes[0],
+      nextStop: stopTimes[1] || null,
+      progress: 0
+    };
   }
 
-  // After trip ends
-  if (currentTimeSec > lastTime) {
-    return { currentStop: stopTimes[stopTimes.length - 1], nextStop: null, progress: 1 };
+  // After trip ends (allow small overrun buffer)
+  if (currentTimeSec > lastTime + 300) {
+    return {
+      currentStop: stopTimes[stopTimes.length - 1],
+      nextStop: null,
+      progress: 1
+    };
   }
 
-  // Find current segment
+  // Find the current segment
   for (let i = 0; i < stops.length - 1; i++) {
     const depart = stops[i].time;
     const arrive = stops[i + 1].time || depart;
+
     if (currentTimeSec >= depart && currentTimeSec <= arrive) {
       const duration = arrive - depart;
       const elapsed = currentTimeSec - depart;
@@ -89,6 +104,33 @@ function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
       };
     }
   }
+
+  // Fallback: time is after some stops but before others (approaching next)
+  for (let i = 0; i < stops.length; i++) {
+    if (stops[i].time > currentTimeSec) {
+      const prevIdx = i > 0 ? i - 1 : 0;
+      const prev = stopTimes[prevIdx];
+      const next = stopTimes[i];
+      const departPrev = stops[prevIdx].time;
+      const arrive = stops[i].time;
+      const duration = arrive - departPrev;
+      const elapsed = currentTimeSec - departPrev;
+      const progress = duration > 0 ? elapsed / duration : 0;
+      return {
+        currentStop: prev,
+        nextStop: next,
+        progress: Math.min(1, progress)
+      };
+    }
+  }
+
+  // If we fall through (very rare), treat as end
+  return {
+    currentStop: stopTimes[stopTimes.length - 1],
+    nextStop: null,
+    progress: 1
+  };
+}
 
   // Approaching next stop
   for (let i = 0; i < stops.length; i++) {
