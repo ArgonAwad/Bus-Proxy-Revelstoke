@@ -168,16 +168,26 @@ function calculatePositionAlongShape(tripId, progress, scheduleData) {
 
   const shapeId = trip.shape_id;
   const points = scheduleData.shapes?.[shapeId];
-  if (!points || points.length < 2) {
-    console.log(`[SHAPE] Invalid shape ${shapeId}: ${points?.length || 0} points`);
+
+  if (!points) {
+    console.log(`[SHAPE] ❌ No shape object for ${shapeId}`);
     return null;
   }
 
-  // Clamp progress
-  progress = Math.max(0, Math.min(1, progress));
+  console.log(`[SHAPE] Shape ${shapeId} exists | points count: ${points.length}`);
 
-  // Distance-based interpolation if distances exist
+  if (points.length < 2) {
+    console.log(`[SHAPE] ❌ Too few points: ${points.length}`);
+    return null;
+  }
+
+  // Log first/last point structure to see if 'dist' exists
+  console.log(`[SHAPE] First point: ${JSON.stringify(points[0])}`);
+  console.log(`[SHAPE] Last point: ${JSON.stringify(points[points.length - 1])}`);
+
+  // Distance-based if distances exist
   if (points[0].dist != null && points[points.length - 1].dist != null) {
+    console.log(`[SHAPE] Distances present | total: ${points[points.length - 1].dist}m`);
     const totalDist = points[points.length - 1].dist;
     const target = progress * totalDist;
 
@@ -189,6 +199,7 @@ function calculatePositionAlongShape(tripId, progress, scheduleData) {
         const segProg = seg > 0 ? (target - p1.dist) / seg : 0;
         const lat = p1.lat + (p2.lat - p1.lat) * segProg;
         const lon = p1.lon + (p2.lon - p1.lon) * segProg;
+        console.log(`[SHAPE] Distance match at segment ${i}, progress ${segProg.toFixed(3)}`);
         return {
           latitude: lat,
           longitude: lon,
@@ -197,14 +208,18 @@ function calculatePositionAlongShape(tripId, progress, scheduleData) {
         };
       }
     }
+    console.log(`[SHAPE] Distance-based failed - no segment matched`);
+  } else {
+    console.log(`[SHAPE] No distance values → using uniform point interpolation`);
   }
 
-  // Uniform point-based fallback
+  // Uniform fallback
   const idx = Math.floor(progress * (points.length - 1));
   const nextIdx = Math.min(idx + 1, points.length - 1);
   const frac = progress * (points.length - 1) - idx;
   const p1 = points[idx];
   const p2 = points[nextIdx];
+  console.log(`[SHAPE] Uniform: point ${idx} → ${nextIdx}, frac ${frac.toFixed(3)}`);
   return {
     latitude: p1.lat + (p2.lat - p1.lat) * frac,
     longitude: p1.lon + (p2.lon - p1.lon) * frac,
