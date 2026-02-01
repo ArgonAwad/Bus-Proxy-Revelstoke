@@ -758,6 +758,455 @@ app.get('/api/debug/test-trip-activity', async (req, res) => {
   }
 });
 
+// Test ALL trip IDs with time analysis
+app.get('/api/debug/test-all-trip-activity', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const timeWindow = parseInt(req.query.timeWindow) || 1800; // 30 minutes default
+    const currentTimeSec = Math.floor(Date.now() / 1000);
+    
+    console.log(`[TEST-ALL-TRIPS] Starting analysis for operator ${operatorId}`);
+    
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!tripResult.success) {
+      return res.status(503).json({ error: 'Trip feed unavailable', url: tripResult.url });
+    }
+    
+    const entities = tripResult.data.entity || [];
+    console.log(`[TEST-ALL-TRIPS] Found ${entities.length} entities in feed`);
+    
+    // Filter to only trip updates with stop times
+    const tripUpdates = entities
+      .filter(e => e.tripUpdate?.trip?.tripId && e.tripUpdate?.stopTimeUpdate?.length > 0)
+      .map(e => ({
+        entityId: e.id,
+        tripId: e.tripUpdate.trip.tripId,
+        trip: e.tripUpdate.trip,
+        stopTimes: e.tripUpdate.stopTimeUpdate,
+        timestamp: e.tripUpdate.timestamp || null
+      }));
+    
+    console.log(`[TEST-ALL-TRIPS] ${tripUpdates.length} trips with stop times found`);
+    
+    // Analyze each trip
+    const tripAnalyses = [];
+    let activeCount = 0;
+    let startingCount = 0;
+    let endingCount = 0;
+    let farFutureCount = 0;
+    let farPastCount = 0;
+    
+    for (const update of tripUpdates) {
+      const stopTimes = update.stopTimes;
+      const tripId = update.tripId;
+      
+      // Get the time range for this trip
+      const validStops = stopTimes.filter(st => 
+        st.arrival?.time || st.departure?.time
+      );
+      
+      if (validStops.length === 0) {
+        // Skip trips with no valid timestamps
+        continue;
+      }
+      
+      // Find first and last valid times
+      const firstStop = validStops[0];
+      const lastStop = validStops[validStops.length - 1];
+      
+      const firstTime = firstStop.departure?.time || firstStop.arrival?.time;
+      const lastTime = lastStop.arrival?.time || lastStop.departure?.time;
+      
+      // Determine trip status
+      let status = 'UNKNOWN';
+      let timeToStart = null;
+      let timeSinceEnd = null;
+      
+      if (currentTimeSec < firstTime - 300) {
+        status = 'FAR_FUTURE';
+        timeToStart = firstTime - currentTimeSec;
+        farFutureCount++;
+      } else if (currentTimeSec >= firstTime - 300 && currentTimeSec <= firstTime + 300) {
+        status = 'STARTING_SOON';
+        timeToStart = firstTime - currentTimeSec;
+        startingCount++;
+      } else if (currentTimeSec > firstTime + 300 && currentTimeSec < lastTime - 300) {
+        status = 'ACTIVE';
+        activeCount++;
+      } else if (currentTimeSec >= lastTime - 300 && currentTimeSec <= lastTime + 300) {
+        status = 'ENDING_SOON';
+        timeSinceEnd = currentTimeSec - lastTime;
+        endingCount++;
+      } else if (currentTimeSec > lastTime + 300) {
+        status = 'FAR_PAST';
+        timeSinceEnd = currentTimeSec - lastTime;
+        farPastCount++;
+      }
+      
+      // Get current stop info if active
+      let currentStopInfo = null;
+      if (status === 'ACTIVE' || status === 'STARTING_SOON' || status === 'ENDING_SOON') {
+        currentStopInfo = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+      }
+      
+      // Check if within our time window of interest
+      const withinTimeWindow = Math.abs(currentTimeSec - firstTime) <= timeWindow || 
+                               Math.abs(currentTimeSec - lastTime) <= timeWindow;
+      
+      // Build analysis
+      const analysis = {
+        tripId,
+        entityId: update.entityId,
+        routeId: update.trip.routeId,
+        directionId: update.trip.directionId || 0,
+        startTime: update.trip.startTime,
+        startDate: update.trip.startDate,
+        blockId: extractBlockIdFromTripId(tripId),
+        
+        // Timing info
+        timing: {
+          status,
+          firstStop: {
+            stopId: firstStop.stopId,
+            time: firstTime,
+            iso: new Date(firstTime * 1000).toISOString(),
+            relativeToNow: firstTime - currentTimeSec,
+            humanRelative: formatTimeDifference(firstTime - currentTimeSec)
+          },
+          lastStop: {
+            stopId: lastStop.stopId,
+            time: lastTime,
+            iso: new Date(lastTime * 1000).toISOString(),
+            relativeToNow: lastTime - currentTimeSec,
+            humanRelative: formatTimeDifference(lastTime - currentTimeSec)
+          },
+          tripDurationSeconds: lastTime - firstTime,
+          tripDurationHuman: formatDuration(lastTime - firstTime)
+        },
+        
+        // Current status
+        currentStatus: {
+          isCurrentlyActive: isTripCurrentlyActive(stopTimes, currentTimeSec),
+          withinTimeWindow,
+          currentStop: currentStopInfo?.currentStop?.stopId,
+          nextStop: currentStopInfo?.nextStop?.stopId,
+          progress: currentStopInfo?.progress?.toFixed(4),
+          progressPercent: currentStopInfo ? Math.round(currentStopInfo.progress * 100) : null
+        },
+        
+        // Stop count info
+        stops: {
+          total: stopTimes.length,
+          withTimes: validStops.length,
+          firstSequence: stopTimes[0]?.stopSequence,
+          lastSequence: stopTimes[stopTimes.length - 1]?.stopSequence
+        },
+        
+        // Time sensitivity test
+        timeSensitivity: {
+          plus30sActive: isTripCurrentlyActive(stopTimes, currentTimeSec + 30),
+          minus30sActive: isTripCurrentlyActive(stopTimes, currentTimeSec - 30),
+          isSensitive: isTripCurrentlyActive(stopTimes, currentTimeSec + 30) !== 
+                      isTripCurrentlyActive(stopTimes, currentTimeSec - 30)
+        }
+      };
+      
+      tripAnalyses.push(analysis);
+    }
+    
+    // Sort trips by proximity to current time
+    tripAnalyses.sort((a, b) => {
+      // Active trips first
+      if (a.currentStatus.isCurrentlyActive && !b.currentStatus.isCurrentlyActive) return -1;
+      if (!a.currentStatus.isCurrentlyActive && b.currentStatus.isCurrentlyActive) return 1;
+      
+      // Then by time to start/end
+      const aProximity = Math.min(
+        Math.abs(a.timing.firstStop.relativeToNow),
+        Math.abs(a.timing.lastStop.relativeToNow)
+      );
+      const bProximity = Math.min(
+        Math.abs(b.timing.firstStop.relativeToNow),
+        Math.abs(b.timing.lastStop.relativeToNow)
+      );
+      
+      return aProximity - bProximity;
+    });
+    
+    // Build summary
+    const summary = {
+      totalTripsInFeed: entities.length,
+      tripsWithStopTimes: tripUpdates.length,
+      tripsAnalyzed: tripAnalyses.length,
+      currentTime: {
+        seconds: currentTimeSec,
+        iso: new Date(currentTimeSec * 1000).toISOString(),
+        readable: new Date(currentTimeSec * 1000).toString()
+      },
+      statusBreakdown: {
+        active: activeCount,
+        startingSoon: startingCount,
+        endingSoon: endingCount,
+        farFuture: farFutureCount,
+        farPast: farPastCount
+      },
+      timeWindowUsed: `${timeWindow} seconds (${Math.round(timeWindow / 60)} minutes)`,
+      feedTimestamp: tripResult.data.header?.timestamp ? {
+        seconds: tripResult.data.header.timestamp,
+        iso: new Date(tripResult.data.header.timestamp * 1000).toISOString(),
+        diffFromServer: currentTimeSec - tripResult.data.header.timestamp
+      } : null
+    };
+    
+    // Group by route for easier analysis
+    const routes = {};
+    tripAnalyses.forEach(analysis => {
+      const routeId = analysis.routeId || 'unknown';
+      if (!routes[routeId]) {
+        routes[routeId] = {
+          routeId,
+          trips: [],
+          activeCount: 0,
+          totalCount: 0
+        };
+      }
+      routes[routeId].trips.push(analysis.tripId);
+      routes[routeId].totalCount++;
+      if (analysis.currentStatus.isCurrentlyActive) {
+        routes[routeId].activeCount++;
+      }
+    });
+    
+    const response = {
+      metadata: {
+        operatorId,
+        requestedAt: new Date().toISOString(),
+        endpoint: '/api/debug/test-all-trip-activity',
+        purpose: 'Analyze all trip IDs in the GTFS-RT feed',
+        responseTimeMs: Date.now() - Math.floor(currentTimeSec * 1000)
+      },
+      summary,
+      routes: Object.values(routes),
+      trips: tripAnalyses,
+      // Include only first 5 trips in main view, full list available
+      sampleTrips: tripAnalyses.slice(0, 5).map(t => ({
+        tripId: t.tripId,
+        routeId: t.routeId,
+        status: t.timing.status,
+        isActive: t.currentStatus.isCurrentlyActive,
+        firstStopTime: t.timing.firstStop.humanRelative,
+        progress: t.currentStatus.progressPercent
+      }))
+    };
+    
+    // If there are many trips, offer paginated view
+    if (tripAnalyses.length > 100) {
+      response.pagination = {
+        total: tripAnalyses.length,
+        pageSize: 100,
+        pages: Math.ceil(tripAnalyses.length / 100),
+        note: 'Showing first 100 trips, use ?page=2 for more'
+      };
+    }
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('[TEST-ALL-TRIPS] Error:', error);
+    res.status(500).json({
+      error: 'Failed to analyze all trips',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Helper functions
+function formatTimeDifference(seconds) {
+  if (seconds === 0) return 'now';
+  
+  const absSeconds = Math.abs(seconds);
+  const sign = seconds > 0 ? 'in ' : 'ago ';
+  
+  if (absSeconds < 60) {
+    return sign + absSeconds + 's';
+  } else if (absSeconds < 3600) {
+    return sign + Math.floor(absSeconds / 60) + 'm';
+  } else if (absSeconds < 86400) {
+    const hours = Math.floor(absSeconds / 3600);
+    const minutes = Math.floor((absSeconds % 3600) / 60);
+    return sign + hours + 'h ' + minutes + 'm';
+  } else {
+    return sign + Math.floor(absSeconds / 86400) + 'd';
+  }
+}
+
+function formatDuration(seconds) {
+  if (seconds < 60) return seconds + 's';
+  
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  } else {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+}
+
+// Enhanced version with pagination and filtering
+app.get('/api/debug/test-all-trips-enhanced', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    const page = parseInt(req.query.page) || 1;
+    const pageSize = parseInt(req.query.pageSize) || 50;
+    const filterStatus = req.query.status; // active, future, past, etc.
+    const routeIdFilter = req.query.routeId;
+    const currentTimeSec = Math.floor(Date.now() / 1000);
+    
+    console.log(`[TEST-ALL-TRIPS-ENHANCED] Starting analysis, page ${page}`);
+    
+    const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
+    
+    if (!tripResult.success) {
+      return res.status(503).json({ error: 'Trip feed unavailable' });
+    }
+    
+    const entities = tripResult.data.entity || [];
+    
+    // Process all trips
+    const allTrips = [];
+    
+    for (const entity of entities) {
+      if (!entity.tripUpdate?.trip?.tripId || !entity.tripUpdate?.stopTimeUpdate?.length) {
+        continue;
+      }
+      
+      const tripId = entity.tripUpdate.trip.tripId;
+      const stopTimes = entity.tripUpdate.stopTimeUpdate;
+      const trip = entity.tripUpdate.trip;
+      
+      // Calculate trip timing
+      const validStops = stopTimes.filter(st => 
+        st.arrival?.time || st.departure?.time
+      );
+      
+      if (validStops.length === 0) continue;
+      
+      const firstStop = validStops[0];
+      const lastStop = validStops[validStops.length - 1];
+      const firstTime = firstStop.departure?.time || firstStop.arrival?.time;
+      const lastTime = lastStop.arrival?.time || lastStop.departure?.time;
+      
+      // Determine status
+      let status = 'UNKNOWN';
+      if (currentTimeSec < firstTime - 300) status = 'FAR_FUTURE';
+      else if (currentTimeSec <= firstTime + 300) status = 'STARTING_SOON';
+      else if (currentTimeSec < lastTime - 300) status = 'ACTIVE';
+      else if (currentTimeSec <= lastTime + 300) status = 'ENDING_SOON';
+      else status = 'FAR_PAST';
+      
+      // Get current progress if relevant
+      const currentStopInfo = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+      
+      // Apply filters
+      if (filterStatus && status !== filterStatus.toUpperCase()) continue;
+      if (routeIdFilter && trip.routeId !== routeIdFilter) continue;
+      
+      allTrips.push({
+        tripId,
+        routeId: trip.routeId,
+        directionId: trip.directionId || 0,
+        startTime: trip.startTime,
+        startDate: trip.startDate,
+        blockId: extractBlockIdFromTripId(tripId),
+        status,
+        isCurrentlyActive: isTripCurrentlyActive(stopTimes, currentTimeSec),
+        firstStopTime: firstTime,
+        lastStopTime: lastTime,
+        currentProgress: currentStopInfo?.progress?.toFixed(4),
+        currentStopId: currentStopInfo?.currentStop?.stopId,
+        nextStopId: currentStopInfo?.nextStop?.stopId,
+        stopCount: stopTimes.length
+      });
+    }
+    
+    // Apply sorting (active first, then by proximity to current time)
+    allTrips.sort((a, b) => {
+      // Active trips first
+      if (a.isCurrentlyActive && !b.isCurrentlyActive) return -1;
+      if (!a.isCurrentlyActive && b.isCurrentlyActive) return 1;
+      
+      // Then by time to start
+      const aTimeToStart = a.firstStopTime - currentTimeSec;
+      const bTimeToStart = b.firstStopTime - currentTimeSec;
+      
+      return Math.abs(aTimeToStart) - Math.abs(bTimeToStart);
+    });
+    
+    // Paginate
+    const totalTrips = allTrips.length;
+    const totalPages = Math.ceil(totalTrips / pageSize);
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedTrips = allTrips.slice(startIndex, endIndex);
+    
+    // Count by status
+    const statusCounts = allTrips.reduce((acc, trip) => {
+      acc[trip.status] = (acc[trip.status] || 0) + 1;
+      return acc;
+    }, {});
+    
+    // Count by route
+    const routeCounts = allTrips.reduce((acc, trip) => {
+      const route = trip.routeId || 'unknown';
+      acc[route] = (acc[route] || 0) + 1;
+      return acc;
+    }, {});
+    
+    const response = {
+      metadata: {
+        operatorId,
+        currentTime: {
+          seconds: currentTimeSec,
+          iso: new Date(currentTimeSec * 1000).toISOString()
+        },
+        pagination: {
+          page,
+          pageSize,
+          totalTrips,
+          totalPages,
+          showing: `${startIndex + 1}-${Math.min(endIndex, totalTrips)} of ${totalTrips}`
+        },
+        filters: {
+          status: filterStatus,
+          routeId: routeIdFilter
+        }
+      },
+      summary: {
+        totalTrips,
+        activeTrips: allTrips.filter(t => t.isCurrentlyActive).length,
+        byStatus: statusCounts,
+        byRoute: Object.entries(routeCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10) // Top 10 routes
+      },
+      trips: paginatedTrips
+    };
+    
+    res.json(response);
+    
+  } catch (error) {
+    console.error('[TEST-ALL-TRIPS-ENHANCED] Error:', error);
+    res.status(500).json({
+      error: 'Failed to analyze trips',
+      details: error.message
+    });
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
