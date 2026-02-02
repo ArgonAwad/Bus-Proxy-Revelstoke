@@ -1,4 +1,4 @@
-// virtual-vehicles.js — minimal helpers for on-demand virtual bus positions
+// virtual-vehicles.js — exact shape-based interpolation for virtual bus positions
 
 // 1. Extract block ID from trip ID (last numeric part after colon)
 function extractBlockIdFromTripId(tripId) {
@@ -11,228 +11,313 @@ function extractBlockIdFromTripId(tripId) {
   return null;
 }
 
-// 2. Get shape ID from trip (match by block_id or partial trip_id, fallback to first shape)
+// 2. Get shape ID from trip (match by block_id or partial trip_id)
 function getShapeIdFromTrip(tripId, scheduleData) {
   if (!scheduleData?.tripsMap) {
     console.log('[getShapeIdFromTrip] No tripsMap in scheduleData');
     return null;
   }
+  
+  // First try: exact trip_id match
+  if (scheduleData.tripsMap[tripId]?.shape_id) {
+    return scheduleData.tripsMap[tripId].shape_id;
+  }
+  
+  // Second try: match by block_id
   const blockId = extractBlockIdFromTripId(tripId);
-  const parts = tripId.split(':');
-  const middleId = parts.length > 1 ? parts[1] : null;
-
-  for (const [key, trip] of Object.entries(scheduleData.tripsMap)) {
-    if (trip.block_id === blockId && trip.shape_id) {
-      console.log(`[getShapeIdFromTrip] Found shape ${trip.shape_id} via block_id ${blockId}`);
-      return trip.shape_id;
-    }
-    if (middleId && key.includes(middleId) && trip.shape_id) {
-      console.log(`[getShapeIdFromTrip] Found shape ${trip.shape_id} via middleId ${middleId}`);
-      return trip.shape_id;
+  if (blockId) {
+    for (const trip of Object.values(scheduleData.tripsMap)) {
+      if (trip.block_id === blockId && trip.shape_id) {
+        return trip.shape_id;
+      }
     }
   }
-
-  const firstShape = Object.keys(scheduleData.shapes || {})[0];
-  if (firstShape) {
-    console.log(`[getShapeIdFromTrip] Fallback shape ${firstShape}`);
-    return firstShape;
-  }
+  
   console.log(`[getShapeIdFromTrip] No shape found for ${tripId}`);
   return null;
 }
 
-// 3. Check if trip is active now (±5 min buffer)
+// 3. Check if trip is active now (NO BUFFER - exact times only)
 function isTripCurrentlyActive(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length < 2) return false;
-
+  
   const getTime = (st) => Number(st.departure?.time || st.arrival?.time || 0);
   const first = getTime(stopTimes[0]);
   const last = getTime(stopTimes[stopTimes.length - 1]);
-
+  
   if (!first || !last || isNaN(first) || isNaN(last)) return false;
-
-  const buffer = 300; // 5 minutes
-  return currentTimeSec >= first - buffer && currentTimeSec <= last + buffer;
+  
+  // NO BUFFER - trip is active only during its scheduled time
+  return currentTimeSec >= first && currentTimeSec <= last;
 }
 
-// 4. Find current stop, next stop, and progress (0–1) — using absolute Unix timestamps
-function findCurrentStopAndProgress(stopTimes, currentTimeSec) {
+// 4. Find current segment between stops and exact progress (0–1) - NO BUFFERS
+function findCurrentSegmentAndProgress(stopTimes, currentTimeSec) {
   if (!stopTimes || stopTimes.length === 0) return null;
-
-  const stops = stopTimes.map((st, idx) => ({
-    idx,
+  
+  // Convert GTFS-RT stop times to simple array with times
+  const stops = stopTimes.map(st => ({
     stop: st,
     time: Number(st.departure?.time || st.arrival?.time || 0)
-  })).filter(s => s.time > 0); // remove invalid/zero times
-
+  })).filter(s => s.time > 0); // remove invalid times
+  
   if (stops.length === 0) return null;
-
-  const firstTime = stops[0].time;
-  const lastTime = stops[stops.length - 1].time;
-
-  // Before trip starts (with 5 min buffer)
-  if (currentTimeSec < firstTime - 300) {
-    return {
-      currentStop: stopTimes[0],
-      nextStop: stopTimes[1] || null,
-      progress: 0
-    };
-  }
-
-  // After trip ends (with 5 min overrun buffer)
-  if (currentTimeSec > lastTime + 300) {
-    return {
-      currentStop: stopTimes[stopTimes.length - 1],
-      nextStop: null,
-      progress: 1
-    };
-  }
-
-  // Find current segment
+  
+  // Find which segment we're in (between stop i and i+1)
   for (let i = 0; i < stops.length - 1; i++) {
-    const depart = stops[i].time;
-    const arrive = stops[i + 1].time || depart;
-
-    if (currentTimeSec >= depart && currentTimeSec <= arrive) {
-      const duration = arrive - depart;
-      const elapsed = currentTimeSec - depart;
+    const timeA = stops[i].time;
+    const timeB = stops[i + 1].time;
+    
+    // Exact check - no buffers
+    if (currentTimeSec >= timeA && currentTimeSec <= timeB) {
+      const duration = timeB - timeA;
+      const elapsed = currentTimeSec - timeA;
       const progress = duration > 0 ? elapsed / duration : 0;
+      
       return {
-        currentStop: stopTimes[i],
-        nextStop: stopTimes[i + 1],
-        progress: Math.max(0, Math.min(1, progress))
+        currentStop: stops[i].stop,
+        nextStop: stops[i + 1].stop,
+        progress: Math.max(0, Math.min(1, progress)),
+        segmentStartTime: timeA,
+        segmentEndTime: timeB
       };
     }
   }
+  
+  return null; // Not currently between any scheduled stops
+}
 
-  // Fallback: approaching next stop
-  for (let i = 0; i < stops.length; i++) {
-    if (stops[i].time > currentTimeSec) {
-      const prevIdx = i > 0 ? i - 1 : 0;
-      const prev = stopTimes[prevIdx];
-      const next = stopTimes[i];
-      const departPrev = stops[prevIdx].time;
-      const arrive = stops[i].time;
-      const duration = arrive - departPrev;
-      const elapsed = currentTimeSec - departPrev;
-      const progress = duration > 0 ? elapsed / duration : 0;
+// 5. Get static schedule for a trip (from stop_times.txt)
+function getStaticScheduleForTrip(tripId, scheduleData) {
+  if (!scheduleData?.stopTimesByTrip) return null;
+  
+  const staticStopTimes = scheduleData.stopTimesByTrip[tripId];
+  if (!staticStopTimes || staticStopTimes.length === 0) return null;
+  
+  // Sort by stop_sequence to ensure correct order
+  return staticStopTimes.sort((a, b) => a.stop_sequence - b.stop_sequence);
+}
+
+// 6. Convert current time to schedule time (seconds since midnight)
+function getScheduleTimeInSeconds() {
+  const now = new Date();
+  const hours = now.getHours();
+  const minutes = now.getMinutes();
+  const seconds = now.getSeconds();
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+// 7. Find current segment in static schedule
+function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec) {
+  if (!staticStopTimes || staticStopTimes.length < 2) return null;
+  
+  for (let i = 0; i < staticStopTimes.length - 1; i++) {
+    const stopA = staticStopTimes[i];
+    const stopB = staticStopTimes[i + 1];
+    
+    const timeA = timeStringToSeconds(stopA.departure_time || stopA.arrival_time);
+    const timeB = timeStringToSeconds(stopB.arrival_time || stopB.departure_time);
+    
+    if (currentScheduleSec >= timeA && currentScheduleSec <= timeB) {
       return {
-        currentStop: prev,
-        nextStop: next,
-        progress: Math.min(1, progress)
+        stopA,
+        stopB,
+        timeA,
+        timeB,
+        distA: stopA.shape_dist_traveled || 0,
+        distB: stopB.shape_dist_traveled || 0
       };
     }
   }
+  
+  return null; // Not currently between scheduled stops
+}
 
-  // Default: treat as end of trip
+// 8. Calculate exact position along shape using distance-based interpolation
+function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) {
+  // 1. Get static schedule for this trip
+  const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+  if (!staticStopTimes) {
+    console.log(`[calculateExactPosition] No static schedule for ${tripId}`);
+    return null;
+  }
+  
+  // 2. Get shape ID
+  const shapeId = getShapeIdFromTrip(tripId, scheduleData);
+  if (!shapeId) {
+    console.log(`[calculateExactPosition] No shape for ${tripId}`);
+    return null;
+  }
+  
+  // 3. Get shape points
+  const shapePoints = scheduleData.shapes?.[shapeId];
+  if (!shapePoints || shapePoints.length < 2) {
+    console.log(`[calculateExactPosition] No shape points for ${shapeId}`);
+    return null;
+  }
+  
+  // 4. Convert current time to schedule time
+  const currentScheduleSec = getScheduleTimeInSeconds();
+  
+  // 5. Find current segment in schedule
+  const segment = findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec);
+  if (!segment) {
+    console.log(`[calculateExactPosition] Not between scheduled stops for ${tripId} at ${currentScheduleSec}s`);
+    return null;
+  }
+  
+  // 6. Calculate progress along this segment
+  const timeProgress = (currentScheduleSec - segment.timeA) / (segment.timeB - segment.timeA);
+  const targetDistance = segment.distA + timeProgress * (segment.distB - segment.distA);
+  
+  // 7. Find point on shape at target distance
+  const position = interpolateOnShapeAtDistance(shapePoints, targetDistance);
+  if (!position) {
+    console.log(`[calculateExactPosition] Could not interpolate at distance ${targetDistance}m`);
+    return null;
+  }
+  
   return {
-    currentStop: stopTimes[stopTimes.length - 1],
-    nextStop: null,
-    progress: 1
+    latitude: position.lat,
+    longitude: position.lon,
+    bearing: position.bearing,
+    progress: timeProgress,
+    segmentStart: segment.stopA.stop_id,
+    segmentEnd: segment.stopB.stop_id
   };
 }
 
-// 5. Calculate position along shape (preferred) or linear fallback
-function calculateCurrentPosition(currentStop, nextStop, progress, scheduleData, tripId) {
-  if (!scheduleData?.stops) {
-    console.log('[POSITION] No stops → fallback');
-    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-  }
-
-  const stopId = String(currentStop.stopId).trim();
-  const coords = scheduleData.stops[stopId];
-
-  if (!coords) {
-    console.log(`[POSITION] No coords for stop ${stopId} → fallback`);
-    return { latitude: 50.9981, longitude: -118.1957, bearing: null, speed: 0 };
-  }
-
-  if (progress <= 0) {
-    return { latitude: coords.lat, longitude: coords.lon, bearing: null, speed: 0 };
-  }
-
-  // Try shape-based interpolation first
-  if (tripId && progress > 0) {
-    const pos = calculatePositionAlongShape(tripId, progress, scheduleData);
-    if (pos) return pos;
-  }
-
-  // Linear fallback between current and next stop
-  if (nextStop) {
-    const nextId = String(nextStop.stopId).trim();
-    const nextCoords = scheduleData.stops[nextId];
-    if (nextCoords) {
-      const lat = coords.lat + (nextCoords.lat - coords.lat) * progress;
-      const lon = coords.lon + (nextCoords.lon - coords.lon) * progress;
-      return { latitude: lat, longitude: lon, bearing: null, speed: 25 };
-    }
-  }
-
-  // No next stop or no coords → stay at current position
-  return { latitude: coords.lat, longitude: coords.lon, bearing: null, speed: 0 };
-}
-
-// 6. Interpolate position along shape
-function calculatePositionAlongShape(tripId, progress, scheduleData) {
-  const trip = scheduleData.tripsMap?.[tripId];
-  if (!trip?.shape_id) return null;
-
-  const shapeId = trip.shape_id;
-  const points = scheduleData.shapes?.[shapeId];
-  if (!points || points.length < 2) return null;
-
-  progress = Math.max(0, Math.min(1, progress));
-
-  // Distance-based interpolation if shape_dist_traveled is available
-  if (points[0].dist != null && points[points.length - 1].dist != null) {
-    const totalDist = points[points.length - 1].dist;
-    const target = progress * totalDist;
-
-    for (let i = 0; i < points.length - 1; i++) {
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      if (target >= p1.dist && target <= p2.dist) {
-        const seg = p2.dist - p1.dist;
-        const segProg = seg > 0 ? (target - p1.dist) / seg : 0;
+// 9. Interpolate position on shape at exact distance
+function interpolateOnShapeAtDistance(shapePoints, targetDistance) {
+  if (!shapePoints || shapePoints.length === 0) return null;
+  
+  // Ensure points are sorted by sequence
+  const sortedPoints = [...shapePoints].sort((a, b) => a.sequence - b.sequence);
+  
+  // Find segment containing target distance
+  for (let i = 0; i < sortedPoints.length - 1; i++) {
+    const p1 = sortedPoints[i];
+    const p2 = sortedPoints[i + 1];
+    
+    // Skip if missing distance data
+    if (p1.dist == null || p2.dist == null) continue;
+    
+    if (targetDistance >= p1.dist && targetDistance <= p2.dist) {
+      const segmentLength = p2.dist - p1.dist;
+      if (segmentLength <= 0) {
+        // Zero or negative length segment
         return {
-          latitude: p1.lat + (p2.lat - p1.lat) * segProg,
-          longitude: p1.lon + (p2.lon - p1.lon) * segProg,
-          bearing: null,
-          speed: 25
+          lat: p1.lat,
+          lon: p1.lon,
+          bearing: calculateBearing(p1, p2)
         };
       }
+      
+      const progress = (targetDistance - p1.dist) / segmentLength;
+      
+      return {
+        lat: p1.lat + (p2.lat - p1.lat) * progress,
+        lon: p1.lon + (p2.lon - p1.lon) * progress,
+        bearing: calculateBearing(p1, p2)
+      };
     }
   }
+  
+  // Target distance outside shape bounds
+  if (targetDistance <= sortedPoints[0].dist) {
+    return {
+      lat: sortedPoints[0].lat,
+      lon: sortedPoints[0].lon,
+      bearing: calculateBearing(sortedPoints[0], sortedPoints[1])
+    };
+  }
+  
+  if (targetDistance >= sortedPoints[sortedPoints.length - 1].dist) {
+    const last = sortedPoints.length - 1;
+    return {
+      lat: sortedPoints[last].lat,
+      lon: sortedPoints[last].lon,
+      bearing: calculateBearing(sortedPoints[last - 1], sortedPoints[last])
+    };
+  }
+  
+  return null;
+}
 
-  // Simple index-based fallback
-  const idx = Math.floor(progress * (points.length - 1));
-  const nextIdx = Math.min(idx + 1, points.length - 1);
-  const frac = progress * (points.length - 1) - idx;
+// 10. Calculate bearing (direction) between two points
+function calculateBearing(pointA, pointB) {
+  if (!pointA || !pointB) return null;
+  
+  const lat1 = pointA.lat * Math.PI / 180;
+  const lat2 = pointB.lat * Math.PI / 180;
+  const lon1 = pointA.lon * Math.PI / 180;
+  const lon2 = pointB.lon * Math.PI / 180;
+  
+  const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) -
+           Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+  
+  let bearing = Math.atan2(y, x) * 180 / Math.PI;
+  bearing = (bearing + 360) % 360;
+  
+  return Math.round(bearing);
+}
 
-  const p1 = points[idx];
-  const p2 = points[nextIdx];
+// 11. Convert time string (HH:MM:SS) to seconds since midnight
+function timeStringToSeconds(timeStr) {
+  if (!timeStr) return 0;
+  
+  const parts = timeStr.split(':');
+  if (parts.length !== 3) return 0;
+  
+  const hours = parseInt(parts[0], 10);
+  const minutes = parseInt(parts[1], 10);
+  const seconds = parseInt(parts[2], 10);
+  
+  if (isNaN(hours) || isNaN(minutes) || isNaN(seconds)) return 0;
+  
+  return hours * 3600 + minutes * 60 + seconds;
+}
 
+// 12. Main function to calculate virtual bus position (for server.js to use)
+function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData) {
+  // Use REAL server time, not feed time
+  const position = calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec);
+  
+  if (!position) {
+    // No fallback - better to return null than wrong position
+    console.log(`[calculateVirtualBusPosition] No position for ${tripId}`);
+    return null;
+  }
+  
   return {
-    latitude: p1.lat + (p2.lat - p1.lat) * frac,
-    longitude: p1.lon + (p2.lon - p1.lon) * frac,
-    bearing: null,
-    speed: 25
+    latitude: position.latitude,
+    longitude: position.longitude,
+    bearing: position.bearing,
+    speed: 25, // Estimated speed in km/h
+    progress: position.progress,
+    segment: {
+      start: position.segmentStart,
+      end: position.segmentEnd
+    }
   };
 }
 
-// 7. Route label helper
+// 13. Route label helper
 function getRouteDisplayName(routeId) {
   if (!routeId) return 'Bus';
   const match = routeId.match(/^(\d+)/);
   return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
 }
 
-// Export only the functions actually used by server.js
+// Export functions
 export {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
-  findCurrentStopAndProgress,
-  calculateCurrentPosition,
-  getRouteDisplayName
+  findCurrentSegmentAndProgress, // Updated name
+  calculateVirtualBusPosition,   // New main function
+  getRouteDisplayName,
+  timeStringToSeconds,
+  getScheduleTimeInSeconds
 };
