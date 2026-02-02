@@ -1,20 +1,5 @@
 // virtual-vehicles.js — exact shape-based interpolation for virtual bus positions
-// Add this function to virtual-vehicles.js:
-function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
-  if (!staticStopTimes || staticStopTimes.length < 2) return false;
-  
-  const firstStop = staticStopTimes[0];
-  const lastStop = staticStopTimes[staticStopTimes.length - 1];
-  
-  const firstTime = timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time);
-  const lastTime = timeStringToSeconds(lastStop.arrival_time || lastStop.departure_time);
-  
-  if (isNaN(firstTime) || isNaN(lastTime)) return false;
-  
-  // With 60-second buffer for practical purposes
-  const buffer = 60;
-  return currentScheduleSec >= (firstTime - buffer) && currentScheduleSec <= (lastTime + buffer);
-}
+
 // 1. Extract block ID from trip ID (last numeric part after colon)
 function extractBlockIdFromTripId(tripId) {
   if (!tripId || typeof tripId !== 'string') return null;
@@ -325,16 +310,35 @@ function getRouteDisplayName(routeId) {
   return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
 }
 
-// Export functions
+// 14. Check if trip is active in static schedule (with buffer)
+function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
+  if (!staticStopTimes || staticStopTimes.length < 2) return false;
+  
+  const firstStop = staticStopTimes[0];
+  const lastStop = staticStopTimes[staticStopTimes.length - 1];
+  
+  const firstTime = timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time);
+  const lastTime = timeStringToSeconds(lastStop.arrival_time || lastStop.departure_time);
+  
+  if (isNaN(firstTime) || isNaN(lastTime)) return false;
+  
+  // With 60-second buffer for practical purposes
+  const buffer = 60;
+  return currentScheduleSec >= (firstTime - buffer) && currentScheduleSec <= (lastTime + buffer);
+}
+
+// Export functions - make sure this matches what server.js imports
 export {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
-  findCurrentSegmentAndProgress,  // Changed name
-  calculateVirtualBusPosition,    // New function
+  findCurrentSegmentAndProgress,
+  calculateVirtualBusPosition,
   getRouteDisplayName,
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
-  isTripActiveInStaticSchedule    // <-- ADD THIS
+  isTripActiveInStaticSchedule,
+  getStaticScheduleForTrip
+  // Note: calculateCurrentPosition is NOT exported because it doesn't exist
+  // Note: findCurrentStopAndProgress is NOT exported (renamed to findCurrentSegmentAndProgress)
 };
-
