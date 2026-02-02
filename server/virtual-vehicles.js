@@ -107,7 +107,7 @@ function getScheduleTimeInSeconds() {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-// 7. Find current segment in static schedule
+// 7. Find current segment in static schedule (WITH MIDNIGHT CROSSING SUPPORT)
 function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec) {
   if (!staticStopTimes || staticStopTimes.length < 2) return null;
   
@@ -118,14 +118,30 @@ function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec)
     const timeA = timeStringToSeconds(stopA.departure_time || stopA.arrival_time);
     const timeB = timeStringToSeconds(stopB.arrival_time || stopB.departure_time);
     
-    if (currentScheduleSec >= timeA && currentScheduleSec <= timeB) {
+    // Handle midnight crossing: if timeB < timeA, assume next day
+    const adjustedTimeB = timeB < timeA ? timeB + 86400 : timeB;
+    
+    // Also check if current time might need adjustment for comparison
+    let adjustedCurrentTime = currentScheduleSec;
+    if (adjustedTimeB > 86400 && currentScheduleSec < timeA) {
+      adjustedCurrentTime = currentScheduleSec + 86400;
+    }
+    
+    if (adjustedCurrentTime >= timeA && adjustedCurrentTime <= adjustedTimeB) {
+      const segmentDuration = adjustedTimeB - timeA;
+      const elapsed = adjustedCurrentTime - timeA;
+      const progress = segmentDuration > 0 ? elapsed / segmentDuration : 0;
+      
       return {
         stopA,
         stopB,
         timeA,
-        timeB,
+        timeB: adjustedTimeB,
+        originalTimeB: timeB,
         distA: stopA.shape_dist_traveled || 0,
-        distB: stopB.shape_dist_traveled || 0
+        distB: stopB.shape_dist_traveled || 0,
+        progress: Math.max(0, Math.min(1, progress)),
+        crossedMidnight: timeB < timeA
       };
     }
   }
@@ -159,7 +175,7 @@ function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) 
   // 4. Convert current time to schedule time
   const currentScheduleSec = getScheduleTimeInSeconds();
   
-  // 5. Find current segment in schedule
+  // 5. Find current segment in schedule (with midnight crossing support)
   const segment = findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec);
   if (!segment) {
     console.log(`[calculateExactPosition] Not between scheduled stops for ${tripId} at ${currentScheduleSec}s`);
@@ -167,7 +183,7 @@ function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) 
   }
   
   // 6. Calculate progress along this segment
-  const timeProgress = (currentScheduleSec - segment.timeA) / (segment.timeB - segment.timeA);
+  const timeProgress = segment.progress;
   const targetDistance = segment.distA + timeProgress * (segment.distB - segment.distA);
   
   // 7. Find point on shape at target distance
@@ -183,7 +199,8 @@ function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) 
     bearing: position.bearing,
     progress: timeProgress,
     segmentStart: segment.stopA.stop_id,
-    segmentEnd: segment.stopB.stop_id
+    segmentEnd: segment.stopB.stop_id,
+    crossedMidnight: segment.crossedMidnight
   };
 }
 
@@ -299,7 +316,8 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData) {
     segment: {
       start: position.segmentStart,
       end: position.segmentEnd
-    }
+    },
+    crossedMidnight: position.crossedMidnight
   };
 }
 
@@ -310,7 +328,7 @@ function getRouteDisplayName(routeId) {
   return match ? `Bus ${match[1]}` : `Bus ${routeId}`;
 }
 
-// 14. Check if trip is active in static schedule (with buffer)
+// 14. Check if trip is active in static schedule (WITH MIDNIGHT CROSSING SUPPORT)
 function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   if (!staticStopTimes || staticStopTimes.length < 2) return false;
   
@@ -322,9 +340,32 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   
   if (isNaN(firstTime) || isNaN(lastTime)) return false;
   
+  // Handle midnight crossing
+  let adjustedLastTime = lastTime;
+  let adjustedCurrentTime = currentScheduleSec;
+  
+  if (lastTime < firstTime) {
+    // Schedule crosses midnight
+    adjustedLastTime = lastTime + 86400;
+    // If current time is before first time, it might be next day
+    if (currentScheduleSec < firstTime) {
+      adjustedCurrentTime = currentScheduleSec + 86400;
+    }
+  }
+  
   // With 60-second buffer for practical purposes
   const buffer = 60;
-  return currentScheduleSec >= (firstTime - buffer) && currentScheduleSec <= (lastTime + buffer);
+  const isActive = adjustedCurrentTime >= (firstTime - buffer) && adjustedCurrentTime <= (adjustedLastTime + buffer);
+  
+  return isActive;
+}
+
+// Helper function to format seconds as HH:MM:SS
+function formatTime(seconds) {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 // Export functions - make sure this matches what server.js imports
@@ -339,6 +380,4 @@ export {
   getScheduleTimeInSeconds,
   isTripActiveInStaticSchedule,
   getStaticScheduleForTrip
-  // Note: calculateCurrentPosition is NOT exported because it doesn't exist
-  // Note: findCurrentStopAndProgress is NOT exported (renamed to findCurrentSegmentAndProgress)
 };
