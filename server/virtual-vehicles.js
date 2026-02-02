@@ -330,10 +330,14 @@ export {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
-  findCurrentSegmentAndProgress, // Updated name
-  calculateVirtualBusPosition,   // New main function
+  findCurrentSegmentAndProgress,
+  findCurrentStopAndProgress,     // Backward compatibility
+  calculateVirtualBusPosition,
+  calculateCurrentPosition,       // Backward compatibility  
   getRouteDisplayName,
   timeStringToSeconds,
   getScheduleTimeInSeconds,
-  isTripActiveInStaticSchedule
+  getStaticScheduleForTrip,       // <-- ADD THIS
+  isTripActiveInStaticSchedule    // <-- ADD THIS
 };
+
