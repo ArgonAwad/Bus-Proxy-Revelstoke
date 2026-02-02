@@ -98,17 +98,41 @@ function getStaticScheduleForTrip(tripId, scheduleData) {
   return staticStopTimes.sort((a, b) => a.stop_sequence - b.stop_sequence);
 }
 
-// 6. Convert current time to schedule time (seconds since midnight)
-function getScheduleTimeInSeconds() {
+// 6. Convert current time to schedule time (seconds since midnight IN LOCAL TIME)
+function getScheduleTimeInSeconds(operatorId = '36') {
   const now = new Date();
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const seconds = now.getSeconds();
-  return hours * 3600 + minutes * 60 + seconds;
+  
+  let timeZone;
+  switch(operatorId) {
+    case '36': // Revelstoke
+      timeZone = 'America/Los_Angeles'; // Pacific Time
+      break;
+    case '47': // Kelowna
+    case '48': // Victoria
+      timeZone = 'America/Vancouver'; // Pacific Time
+      break;
+    default:
+      timeZone = 'America/Los_Angeles'; // Default to Pacific
+  }
+  
+  const localTime = new Date(now.toLocaleString('en-US', { timeZone }));
+  
+  const hours = localTime.getHours();
+  const minutes = localTime.getMinutes();
+  const seconds = localTime.getSeconds();
+  
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+  
+  // Debug log
+  console.log(`[getScheduleTimeInSeconds] Operator: ${operatorId}, Timezone: ${timeZone}`);
+  console.log(`[getScheduleTimeInSeconds] UTC: ${now.getUTCHours()}:${now.getUTCMinutes()}:${now.getUTCSeconds()}`);
+  console.log(`[getScheduleTimeInSeconds] Local: ${hours}:${minutes}:${seconds} (${totalSeconds}s)`);
+  
+  return totalSeconds;
 }
 
 // 7. Find current segment in static schedule (WITH MIDNIGHT CROSSING SUPPORT)
-function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec) {
+function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec, operatorId) {
   if (!staticStopTimes || staticStopTimes.length < 2) return null;
   
   for (let i = 0; i < staticStopTimes.length - 1; i++) {
@@ -150,7 +174,7 @@ function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec)
 }
 
 // 8. Calculate exact position along shape using distance-based interpolation
-function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) {
+function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, operatorId = '36') {
   // 1. Get static schedule for this trip
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
   if (!staticStopTimes) {
@@ -172,13 +196,21 @@ function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec) 
     return null;
   }
   
-  // 4. Convert current time to schedule time
-  const currentScheduleSec = getScheduleTimeInSeconds();
+  // 4. Convert current time to schedule time (WITH TIMEZONE)
+  const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
   
   // 5. Find current segment in schedule (with midnight crossing support)
-  const segment = findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec);
+  const segment = findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec, operatorId);
   if (!segment) {
-    console.log(`[calculateExactPosition] Not between scheduled stops for ${tripId} at ${currentScheduleSec}s`);
+    console.log(`[calculateExactPosition] Not between scheduled stops for ${tripId} at ${currentScheduleSec}s (${formatTime(currentScheduleSec)})`);
+    
+    // Debug: show first and last stop times
+    const firstStop = staticStopTimes[0];
+    const lastStop = staticStopTimes[staticStopTimes.length - 1];
+    const firstTime = timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time);
+    const lastTime = timeStringToSeconds(lastStop.arrival_time || lastStop.departure_time);
+    console.log(`[calculateExactPosition] Debug ${tripId}: First stop at ${firstTime}s (${formatTime(firstTime)}), Last stop at ${lastTime}s (${formatTime(lastTime)})`);
+    
     return null;
   }
   
@@ -297,9 +329,9 @@ function timeStringToSeconds(timeStr) {
 }
 
 // 12. Main function to calculate virtual bus position (for server.js to use)
-function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData) {
+function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, operatorId = '36') {
   // Use REAL server time, not feed time
-  const position = calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec);
+  const position = calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, operatorId);
   
   if (!position) {
     // No fallback - better to return null than wrong position
@@ -356,6 +388,9 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   // With 60-second buffer for practical purposes
   const buffer = 60;
   const isActive = adjustedCurrentTime >= (firstTime - buffer) && adjustedCurrentTime <= (adjustedLastTime + buffer);
+  
+  // Debug logging
+  console.log(`[isTripActiveInStaticSchedule] First: ${formatTime(firstTime)}, Last: ${formatTime(lastTime)}, Current: ${formatTime(currentScheduleSec)}, Active: ${isActive}, Adjusted: ${lastTime < firstTime ? 'YES' : 'NO'}`);
   
   return isActive;
 }
