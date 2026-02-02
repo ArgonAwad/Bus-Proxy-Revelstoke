@@ -100,15 +100,22 @@ async function ensureScheduleLoaded() {
 }
 
 // Main virtuals endpoint (updated)
-// Main virtuals endpoint (minimal, on-demand)
 // Main virtuals endpoint (updated)
 app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const allVirtuals = req.query.all_virtuals === 'true';
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    const currentScheduleSec = getScheduleTimeInSeconds(operatorId); // This is seconds since midnight!
+    const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
     const start = Date.now();
+    
+    // Helper function to format seconds as HH:MM:SS
+    const formatTime = (seconds) => {
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
     
     console.log(`[VIRTUALS] Called | op=${operatorId} | all=${allVirtuals} | currentTime=${currentTimeSec} | scheduleTime=${currentScheduleSec}s (${formatTime(currentScheduleSec)})`);
 
