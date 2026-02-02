@@ -15,7 +15,9 @@ import {
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
   isTripActiveInStaticSchedule,
-  getStaticScheduleForTrip
+  getStaticScheduleForTrip,
+  isTripScheduledToday,           // NEW: Add this import
+  isTripActiveAndScheduled        // NEW: Add this import
 } from './virtual-vehicles.js';
 
 //construct Cache to throttle back virtual bus feed to 5 seconds
@@ -201,6 +203,13 @@ app.get('/api/virtuals', async (req, res) => {
     }
 
     console.log(`[VIRTUALS] Schedule loaded: ${Object.keys(schedule.tripsMap).length} trips, ${Object.keys(schedule.shapes).length} shapes, ${Object.keys(schedule.stopTimesByTrip).length} trips with stop times`);
+    
+    // Check if we have calendar dates loaded
+    const hasCalendarDates = schedule.calendarDates && Object.keys(schedule.calendarDates).length > 0;
+    console.log(`[VIRTUALS] Calendar dates loaded: ${hasCalendarDates ? 'YES' : 'NO'}`);
+    if (hasCalendarDates) {
+      console.log(`[VIRTUALS] Service IDs in calendar: ${Object.keys(schedule.calendarDates).length}`);
+    }
 
     // Get real vehicle trips to check against
     const realVehicleTripIds = new Set();
@@ -237,6 +246,12 @@ app.get('/api/virtuals', async (req, res) => {
       if (!staticStopTimes || staticStopTimes.length === 0) {
         console.log(`[VIRTUALS] No static schedule found for ${tripId}`);
         return; // Can't create virtual without schedule
+      }
+
+      // NEW: Check if trip is scheduled today (based on calendar_dates)
+      if (!isTripScheduledToday(tripId, schedule)) {
+        console.log(`[VIRTUALS] Skipping ${tripId} - not scheduled today`);
+        return;
       }
 
       // Check if trip is active in static schedule (with midnight crossing support)
@@ -354,7 +369,9 @@ app.get('/api/virtuals', async (req, res) => {
         scheduleInfo: {
           tripsLoaded: Object.keys(schedule.tripsMap).length,
           shapesLoaded: Object.keys(schedule.shapes).length,
-          tripsWithStopTimes: Object.keys(schedule.stopTimesByTrip).length
+          tripsWithStopTimes: Object.keys(schedule.stopTimesByTrip).length,
+          hasCalendarDates: hasCalendarDates,
+          serviceIdsCount: hasCalendarDates ? Object.keys(schedule.calendarDates).length : 0
         },
         cacheInfo: {
           cached: false,
@@ -389,7 +406,6 @@ app.get('/api/virtuals', async (req, res) => {
   }
 });
 
-// Keep /api/buses (real + virtual combined) — with caching
 // Keep /api/buses (real + virtual combined) — with caching
 app.get('/api/buses', async (req, res) => {
   if (!root) return res.status(500).json({ error: 'Proto not loaded' });
@@ -438,6 +454,10 @@ app.get('/api/buses', async (req, res) => {
         if (!schedule?.tripsMap || !schedule?.stopTimesByTrip) {
           console.log('[/api/buses] Schedule not loaded, skipping virtual buses');
         } else {
+          // Check if we have calendar dates
+          const hasCalendarDates = schedule.calendarDates && Object.keys(schedule.calendarDates).length > 0;
+          console.log(`[/api/buses] Calendar dates loaded: ${hasCalendarDates ? 'YES' : 'NO'}`);
+
           // Get real vehicle trips to check against (for filtering in normal mode)
           const realVehicleTripIds = new Set();
           if (vehicleResult.success && vehicleResult.data?.entity) {
@@ -468,9 +488,16 @@ app.get('/api/buses', async (req, res) => {
               return; // Can't create virtual without schedule
             }
 
+            // NEW: Check if trip is scheduled today (based on calendar_dates)
+            if (!isTripScheduledToday(tripId, schedule)) {
+              console.log(`[/api/buses] Skipping ${tripId} - not scheduled today`);
+              return;
+            }
+
             // Check if trip is active in static schedule (with midnight crossing support)
             const isActiveInSchedule = isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
             if (!isActiveInSchedule) {
+              console.log(`[/api/buses] Skipping ${tripId} - not active in static schedule`);
               return;
             }
 
@@ -703,12 +730,15 @@ app.get('/api/debug/trip-matching', async (req, res) => {
         tripId,
         routeId: staticTrip?.route_id || 'unknown',
         blockId: staticTrip?.block_id || extractBlockIdFromTripId(tripId),
+        serviceId: staticTrip?.service_id || 'unknown',
         hasRealVehicle,
         hasStaticSchedule: !!schedule.stopTimesByTrip?.[tripId],
         isActiveNow: isTripActiveInStaticSchedule(
           getStaticScheduleForTrip(tripId, schedule), 
           getScheduleTimeInSeconds(operatorId)
-        )
+        ),
+        isScheduledToday: isTripScheduledToday(tripId, schedule),
+        calendarDatesCount: schedule.calendarDates?.[staticTrip?.service_id]?.size || 0
       };
     });
     
@@ -721,6 +751,11 @@ app.get('/api/debug/trip-matching', async (req, res) => {
         unix: Math.floor(Date.now() / 1000),
         schedule: getScheduleTimeInSeconds(operatorId),
         formatted: formatTime(getScheduleTimeInSeconds(operatorId))
+      },
+      calendarInfo: {
+        loaded: !!schedule.calendarDates,
+        serviceCount: schedule.calendarDates ? Object.keys(schedule.calendarDates).length : 0,
+        today: new Date().toISOString().split('T')[0].replace(/-/g, '')
       }
     });
     
@@ -824,7 +859,8 @@ app.get('/api/health', (req, res) => {
     status: 'healthy',
     proto: !!root,
     schedule: !!scheduleLoader.scheduleData?.tripsMap,
-    trips: scheduleLoader.scheduleData?.tripsMap ? Object.keys(scheduleLoader.scheduleData.tripsMap).length : 0
+    trips: scheduleLoader.scheduleData?.tripsMap ? Object.keys(scheduleLoader.scheduleData.tripsMap).length : 0,
+    calendarDates: scheduleLoader.scheduleData?.calendarDates ? Object.keys(scheduleLoader.scheduleData.calendarDates).length : 0
   });
 });
 
