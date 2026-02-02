@@ -18,6 +18,10 @@ import {
   getStaticScheduleForTrip
 } from './virtual-vehicles.js';
 
+//construct Cache to throttle back virtual bus feed to 5 seconds
+const virtualBusesCache = new Map(); // operatorId -> { virtualEntities, timestamp }
+const virtualsCache = new Map(); // operatorId -> { data, timestamp }
+
 const scheduleLoader = new ScheduleLoader();
 const app = express();
 app.use(cors());
@@ -27,6 +31,34 @@ const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/
 const BASE_URL = 'https://bct.tmix.se/gtfs-realtime';
 const DEFAULT_OPERATOR_ID = '36';
 let root = null;
+
+//clean caches periodically
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  let cleanedVirtuals = 0;
+  let cleanedBuses = 0;
+  
+  // Clean virtualsCache
+  for (const [key, value] of virtualsCache.entries()) {
+    if (now - value.timestamp > 300) {
+      virtualsCache.delete(key);
+      cleanedVirtuals++;
+    }
+  }
+  
+  // Clean virtualBusesCache
+  for (const [key, value] of virtualBusesCache.entries()) {
+    if (now - value.timestamp > 300) {
+      virtualBusesCache.delete(key);
+      cleanedBuses++;
+    }
+  }
+  
+  if (cleanedVirtuals > 0 || cleanedBuses > 0) {
+    console.log(`[CACHE-CLEANUP] Removed ${cleanedVirtuals} from virtualsCache, ${cleanedBuses} from virtualBusesCache`);
+    console.log(`[CACHE-STATS] Current: virtualsCache=${virtualsCache.size}, virtualBusesCache=${virtualBusesCache.size}`);
+  }
+}, 60000); // Run every minute
 
 // helper function
 function formatTime(seconds) {
@@ -107,14 +139,13 @@ async function ensureScheduleLoaded() {
   }
 }
 
-// Main virtuals endpoint (updated)
-// Main virtuals endpoint (updated)
+// Main virtuals endpoint with 5-second throttling
 app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const allVirtuals = req.query.all_virtuals === 'true';
+    const forceRefresh = req.query.force === 'true';
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
     const start = Date.now();
     
     // Helper function to format seconds as HH:MM:SS
@@ -125,8 +156,27 @@ app.get('/api/virtuals', async (req, res) => {
       return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
     
-    console.log(`[VIRTUALS] Called | op=${operatorId} | all=${allVirtuals} | currentTime=${currentTimeSec} | scheduleTime=${currentScheduleSec}s (${formatTime(currentScheduleSec)})`);
+    // Check cache - throttle to 5 seconds, unless force refresh
+    const cacheKey = `${operatorId}-${allVirtuals}`;
+    const cached = virtualsCache.get(cacheKey);
+    
+    if (!forceRefresh && cached && (currentTimeSec - cached.timestamp < 5)) {
+      console.log(`[VIRTUALS] Returning cached response (${currentTimeSec - cached.timestamp}s old)`);
+      
+      // Update the timestamp in the response to "freshen" it
+      const response = JSON.parse(JSON.stringify(cached.data));
+      response.header.timestamp = currentTimeSec;
+      response.metadata.cached = true;
+      response.metadata.cachedForSeconds = currentTimeSec - cached.timestamp;
+      response.metadata.generatedAt = cached.timestamp;
+      response.metadata.responseTimeMs = Date.now() - start;
+      
+      console.log(`[VIRTUALS] Done: ${response.entity.length} virtual buses from cache`);
+      return res.json(response);
+    }
 
+    console.log(`[VIRTUALS] Called | op=${operatorId} | all=${allVirtuals} | force=${forceRefresh} | currentTime=${currentTimeSec} | scheduleTime=${getScheduleTimeInSeconds(operatorId)}s`);
+    
     // Fetch BOTH vehicle positions AND trip updates
     const [vehicleResult, tripResult] = await Promise.all([
       fetchGTFSFeed('vehicleupdates.pb', operatorId),
@@ -190,6 +240,7 @@ app.get('/api/virtuals', async (req, res) => {
       }
 
       // Check if trip is active in static schedule (with midnight crossing support)
+      const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
       const isActiveInSchedule = isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
       if (!isActiveInSchedule) {
         console.log(`[VIRTUALS] Skipping ${tripId} - not active in static schedule`);
@@ -305,16 +356,27 @@ app.get('/api/virtuals', async (req, res) => {
           shapesLoaded: Object.keys(schedule.shapes).length,
           tripsWithStopTimes: Object.keys(schedule.stopTimesByTrip).length
         },
+        cacheInfo: {
+          cached: false,
+          generatedAt: currentTimeSec,
+          forceRefresh: forceRefresh
+        },
         debug: {
           currentTimeUnix: currentTimeSec,
           currentTimeISO: new Date(currentTimeSec * 1000).toISOString(),
-          currentScheduleSec: currentScheduleSec,
-          currentScheduleTime: formatTime(currentScheduleSec)
+          currentScheduleSec: getScheduleTimeInSeconds(operatorId),
+          currentScheduleTime: formatTime(getScheduleTimeInSeconds(operatorId))
         }
       }
     };
 
-    console.log(`[VIRTUALS] Done: ${virtualEntities.length} virtual buses in ${took}ms (mode: ${allVirtuals ? 'all' : 'missing-only'})`);
+    // Cache the response for 5 seconds
+    virtualsCache.set(cacheKey, {
+      data: response,
+      timestamp: currentTimeSec
+    });
+    
+    console.log(`[VIRTUALS] Done: ${virtualEntities.length} virtual buses in ${took}ms (mode: ${allVirtuals ? 'all' : 'missing-only'}) | Cached for 5s`);
     res.json(response);
     
   } catch (err) {
@@ -327,100 +389,126 @@ app.get('/api/virtuals', async (req, res) => {
   }
 });
 
-// Keep /api/buses (real + virtual combined) — simplified
+// Keep /api/buses (real + virtual combined) — with caching
 app.get('/api/buses', async (req, res) => {
   if (!root) return res.status(500).json({ error: 'Proto not loaded' });
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const noVirtuals = 'no_virtuals' in req.query;
     const allVirtuals = req.query.all_virtuals === 'true';
+    const forceRefresh = req.query.force === 'true';
     const startTime = Date.now();
 
     console.log(`[${new Date().toISOString()}] /api/buses called | operator=${operatorId} | no_virtuals=${noVirtuals} | all_virtuals=${allVirtuals}`);
 
-    // Fetch all three feeds in parallel
+    // ALWAYS fetch fresh real vehicle positions (no cache)
     const [vehicleResult, tripResult, alertsResult] = await Promise.all([
       fetchGTFSFeed('vehicleupdates.pb', operatorId),
       fetchGTFSFeed('tripupdates.pb', operatorId),
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
 
-    // Process vehicle positions (add blockId parsing)
+    // Process vehicle positions (add blockId parsing) - ALWAYS FRESH
     let processedVehicles = [];
     if (vehicleResult.success && vehicleResult.data?.entity) {
       processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data.entity);
     }
 
-    // Process trip updates (add blockId parsing)
+    // Process trip updates (add blockId parsing) - ALWAYS FRESH
     let processedTrips = tripResult.success ? addParsedBlockIdToTripUpdates(tripResult.data.entity || []) : [];
 
-    // If we want virtuals, generate them on-the-fly
+    // VIRTUAL BUSES: Check cache (5-second throttle)
     let virtualEntities = [];
     if (!noVirtuals && tripResult.success) {
-      await ensureScheduleLoaded();
-      const schedule = scheduleLoader.scheduleData;
+      const cacheKey = `buses-${operatorId}-${allVirtuals}`;
+      const cached = virtualBusesCache.get(cacheKey);
+      
+      if (!forceRefresh && cached && (Date.now() - cached.timestamp < 5000)) {
+        // Use cached virtual buses
+        console.log(`[/api/buses] Using cached virtual buses (${Date.now() - cached.timestamp}ms old)`);
+        virtualEntities = cached.virtualEntities;
+      } else {
+        // Generate fresh virtual buses
+        await ensureScheduleLoaded();
+        const schedule = scheduleLoader.scheduleData;
 
-      processedTrips.forEach(entity => {
-        const tu = entity.tripUpdate;
-        if (!tu?.trip?.tripId || !tu.stopTimeUpdate?.length) return;
+        virtualEntities = [];
+        const processedVirtualTrips = new Set();
 
-        const trip = tu.trip;
-        const stopTimes = tu.stopTimeUpdate;
-        const blockId = extractBlockIdFromTripId(trip.tripId);
-        if (!blockId) return;
+        processedTrips.forEach(entity => {
+          const tu = entity.tripUpdate;
+          if (!tu?.trip?.tripId || !tu.stopTimeUpdate?.length) return;
 
-        // Skip if not in all-virtual mode and block is real/active
-        // (you can add real block check here later if needed)
-        // if (!allVirtuals && activeRealBlocks.has(blockId)) return;
+          const trip = tu.trip;
+          const stopTimes = tu.stopTimeUpdate;
+          const blockId = extractBlockIdFromTripId(trip.tripId);
+          if (!blockId) return;
 
-        if (!isTripCurrentlyActive(stopTimes, Math.floor(Date.now() / 1000))) return;
+          // Skip if already processed this trip
+          if (processedVirtualTrips.has(trip.tripId)) return;
+          processedVirtualTrips.add(trip.tripId);
 
-        const info = findCurrentSegmentAndProgress(stopTimes, Math.floor(Date.now() / 1000));
-        if (!info) return;
+          // Check if trip is active
+          if (!isTripCurrentlyActive(stopTimes, Math.floor(Date.now() / 1000))) return;
 
-        const { currentStop, nextStop, progress } = info;
+          const info = findCurrentSegmentAndProgress(stopTimes, Math.floor(Date.now() / 1000));
+          if (!info) return;
 
-        const position = calculateVirtualBusPosition(
-          trip.tripId,
-          Math.floor(Date.now() / 1000),
-          schedule
-        );
+          const { currentStop, nextStop, progress } = info;
 
-        const vehicleId = `VIRT-${blockId}`;
+          const position = calculateVirtualBusPosition(
+            trip.tripId,
+            Math.floor(Date.now() / 1000),
+            schedule,
+            operatorId
+          );
 
-        virtualEntities.push({
-          id: vehicleId,
-          vehicle: {
-            trip: {
-              tripId: trip.tripId,
-              startTime: trip.startTime,
-              startDate: trip.startDate,
-              routeId: trip.routeId,
-              directionId: trip.directionId || 0,
-              blockId
-            },
-            position: {
-              latitude: position.latitude,
-              longitude: position.longitude,
-              bearing: position.bearing || null,
-              speed: position.speed || 0
-            },
-            currentStopSequence: currentStop.stopSequence || 1,
-            currentStatus: progress === 0 ? 1 : 2,
-            timestamp: Math.floor(Date.now() / 1000),
-            stopId: currentStop.stopId,
+          if (!position) return;
+
+          const vehicleId = `VIRT-${blockId}`;
+
+          virtualEntities.push({
+            id: vehicleId,
             vehicle: {
-              id: vehicleId,
-              label: `Ghost ${getRouteDisplayName(trip.routeId)}`,
-              is_virtual: true
-            },
-            progress: progress.toFixed(3)
-          }
+              trip: {
+                tripId: trip.tripId,
+                startTime: trip.startTime,
+                startDate: trip.startDate,
+                routeId: trip.routeId,
+                directionId: trip.directionId || 0,
+                blockId
+              },
+              position: {
+                latitude: position.latitude,
+                longitude: position.longitude,
+                bearing: position.bearing || null,
+                speed: position.speed || 0
+              },
+              currentStopSequence: currentStop.stopSequence || 1,
+              currentStatus: progress === 0 ? 1 : 2,
+              timestamp: Math.floor(Date.now() / 1000),
+              stopId: currentStop.stopId,
+              vehicle: {
+                id: vehicleId,
+                label: `Ghost ${getRouteDisplayName(trip.routeId)}`,
+                is_virtual: true
+              },
+              progress: progress.toFixed(3)
+            }
+          });
         });
-      });
+
+        // Cache the virtual buses
+        virtualBusesCache.set(cacheKey, {
+          virtualEntities,
+          timestamp: Date.now()
+        });
+        
+        console.log(`[/api/buses] Generated fresh virtual buses (${virtualEntities.length} buses)`);
+      }
     }
 
-    // Combine real + virtual vehicles
+    // Combine real + (possibly cached) virtual vehicles
     const allVehicleEntities = [...processedVehicles, ...virtualEntities];
 
     // Build final response
@@ -444,6 +532,10 @@ app.get('/api/buses', async (req, res) => {
           responseTimeMs: responseTime,
           no_virtuals: noVirtuals,
           all_virtuals_mode: allVirtuals,
+          cacheInfo: {
+            virtualBusesCached: virtualEntities.length > 0 && (Date.now() - virtualBusesCache.get(`buses-${operatorId}-${allVirtuals}`)?.timestamp < 5000),
+            realBusesFresh: true
+          },
           feeds: {
             vehicle_positions: {
               success: vehicleResult.success,
