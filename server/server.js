@@ -106,7 +106,7 @@ app.get('/api/virtuals', async (req, res) => {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const allVirtuals = req.query.all_virtuals === 'true';
     const currentTimeSec = Math.floor(Date.now() / 1000);
-    const currentScheduleSec = getScheduleTimeInSeconds(); // This is seconds since midnight!
+    const currentScheduleSec = getScheduleTimeInSeconds(operatorId); // This is seconds since midnight!
     const start = Date.now();
     
     console.log(`[VIRTUALS] Called | op=${operatorId} | all=${allVirtuals} | currentTime=${currentTimeSec} | scheduleTime=${currentScheduleSec}s (${formatTime(currentScheduleSec)})`);
@@ -191,7 +191,7 @@ app.get('/api/virtuals', async (req, res) => {
       }
 
       // Calculate position using static schedule
-      const position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule);
+     position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule, operatorId);
       
       if (!position) {
         console.log(`[VIRTUALS] Could not calculate position for ${tripId}`);
