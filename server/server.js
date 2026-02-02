@@ -102,9 +102,9 @@ app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
     const allVirtuals = req.query.all_virtuals === 'true';
-    const currentTimeSec = Math.floor(Date.now() / 1000);
+    const currentTimeSec = Math.floor(Date.now() / 1000); // REAL SERVER TIME
     const start = Date.now();
-
+    
     console.log(`[VIRTUALS] Called | op=${operatorId} | all=${allVirtuals} | t=${currentTimeSec}`);
 
     const tripResult = await fetchGTFSFeed('tripupdates.pb', operatorId);
@@ -112,7 +112,8 @@ app.get('/api/virtuals', async (req, res) => {
 
     await ensureScheduleLoaded();
     const schedule = scheduleLoader.scheduleData;
-    if (!schedule?.tripsMap || !schedule?.shapes || !schedule?.stops) {
+
+    if (!schedule?.tripsMap || !schedule?.shapes || !schedule?.stopTimesByTrip) {
       return res.status(500).json({ error: 'Schedule incomplete' });
     }
 
@@ -123,33 +124,28 @@ app.get('/api/virtuals', async (req, res) => {
       if (!tu?.trip?.tripId || !tu.stopTimeUpdate?.length) return;
 
       const trip = tu.trip;
-      const stopTimes = tu.stopTimeUpdate;
-      const blockId = extractBlockIdFromTripId(trip.tripId);
-      if (!blockId) return;
+      const tripId = trip.tripId;
+      
+      // Check if trip is active (NO BUFFER in new implementation)
+      if (!isTripCurrentlyActive(tu.stopTimeUpdate, currentTimeSec)) return;
+      
+      // Calculate exact position using static schedule
+      const position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule);
+      
+      if (!position) {
+        // Can't calculate exact position - skip this virtual bus
+        console.log(`[VIRTUALS] No position for ${tripId}`);
+        return;
+      }
 
-      // Only active trips
-      if (!isTripCurrentlyActive(stopTimes, currentTimeSec)) return;
-
-      const info = findCurrentStopAndProgress(stopTimes, currentTimeSec);
-      if (!info) return;
-
-      const { currentStop, nextStop, progress } = info;
-
-      const position = calculateCurrentPosition(
-        currentStop,
-        nextStop,
-        progress,
-        schedule,
-        trip.tripId
-      );
-
+      const blockId = extractBlockIdFromTripId(tripId);
       const vehicleId = `VIRT-${blockId}`;
 
       virtualEntities.push({
         id: vehicleId,
         vehicle: {
           trip: {
-            tripId: trip.tripId,
+            tripId: tripId,
             startTime: trip.startTime,
             startDate: trip.startDate,
             routeId: trip.routeId,
@@ -162,22 +158,21 @@ app.get('/api/virtuals', async (req, res) => {
             bearing: position.bearing || null,
             speed: position.speed || 0
           },
-          currentStopSequence: currentStop.stopSequence || 1,
-          currentStatus: progress === 0 ? 1 : 2,
+          currentStopSequence: 1, // You might need to calculate this
+          currentStatus: 2, // IN_TRANSIT_TO
           timestamp: currentTimeSec,
-          stopId: currentStop.stopId,
+          stopId: position.segment?.start || null,
           vehicle: {
             id: vehicleId,
             label: `Ghost ${getRouteDisplayName(trip.routeId)}`,
             is_virtual: true
           },
-          progress: progress.toFixed(3)
+          progress: position.progress?.toFixed(3) || "0.000"
         }
       });
     });
 
     const took = Date.now() - start;
-
     res.json({
       header: {
         gtfs_realtime_version: "2.0",
@@ -193,8 +188,8 @@ app.get('/api/virtuals', async (req, res) => {
         generated: virtualEntities.length
       }
     });
-
     console.log(`[VIRTUALS] Done: ${virtualEntities.length} buses in ${took}ms`);
+    
   } catch (err) {
     console.error('[VIRTUALS] Error:', err);
     res.status(500).json({ error: 'Failed', details: err.message });
