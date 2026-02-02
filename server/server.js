@@ -4,14 +4,16 @@ import fetch from 'node-fetch';
 import protobuf from 'protobufjs';
 import ScheduleLoader from './schedule-loader.js';
 
-// Import ONLY the helpers we actually need
+// In server.js, change the imports to:
 import {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
-  findCurrentStopAndProgress,
-  calculateCurrentPosition,
-  getRouteDisplayName
+  findCurrentSegmentAndProgress,  // Changed name
+  calculateVirtualBusPosition,    // New function
+  getRouteDisplayName,
+  timeStringToSeconds,            // If needed
+  getScheduleTimeInSeconds        // If needed
 } from './virtual-vehicles.js';
 
 const scheduleLoader = new ScheduleLoader();
