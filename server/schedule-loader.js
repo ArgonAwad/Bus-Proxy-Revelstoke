@@ -14,7 +14,8 @@ class ScheduleLoader {
       tripsMap: {},
       stops: {},
       stopTimesByTrip: {},
-      shapes: {}
+      shapes: {},
+      calendarDates: {}  // NEW: Add calendar dates storage
     };
   }
 
@@ -38,7 +39,7 @@ async loadSchedules() {
     const directory = await unzipper.Open.buffer(Buffer.from(zipBuffer));
     console.log(`📁 ZIP contains ${directory.files.length} files`);
     
-    const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
+    const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt', 'calendar_dates.txt']; // Added calendar_dates.txt
     const files = {};
     
     // Extract required files
@@ -73,6 +74,7 @@ async loadSchedules() {
     const stops = this.parseCSV(files['stops.txt']);
     const stopTimes = this.parseCSV(files['stop_times.txt']);
     const shapes = this.parseCSV(files['shapes.txt']);
+    const calendarDates = this.parseCSV(files['calendar_dates.txt']); // NEW
 
     console.log(`\n📈 Parsed counts:`);
     console.log(`   Routes: ${routes.length}`);
@@ -80,6 +82,7 @@ async loadSchedules() {
     console.log(`   Stops: ${stops.length}`);
     console.log(`   Stop Times: ${stopTimes.length}`);
     console.log(`   Shapes: ${shapes.length}`);
+    console.log(`   Calendar Dates: ${calendarDates.length}`);
 
     // Build data structures
     this.scheduleData.routesMap = this.createRoutesMap(routes);
@@ -87,11 +90,25 @@ async loadSchedules() {
     this.scheduleData.stops = this.createStopsMap(stops);
     this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
     this.scheduleData.shapes = this.createShapesMap(shapes);
+    this.scheduleData.calendarDates = this.createCalendarDatesMap(calendarDates); // NEW
 
     console.log(`\n🎉 [${new Date().toISOString()}] Successfully loaded fresh GTFS data from API`);
     console.log(`   Stops loaded: ${Object.keys(this.scheduleData.stops).length}`);
     console.log(`   Trips loaded: ${Object.keys(this.scheduleData.tripsMap).length}`);
     console.log(`   Shapes loaded: ${Object.keys(this.scheduleData.shapes).length}`);
+    console.log(`   Calendar dates: ${Object.keys(this.scheduleData.calendarDates).length} service IDs`);
+    
+    // Log some calendar stats
+    if (this.scheduleData.calendarDates) {
+      const serviceIds = Object.keys(this.scheduleData.calendarDates);
+      const totalDates = serviceIds.reduce((sum, id) => sum + this.scheduleData.calendarDates[id].size, 0);
+      console.log(`   Total scheduled dates: ${totalDates}`);
+      
+      // Show first few service IDs and their date counts
+      serviceIds.slice(0, 3).forEach(serviceId => {
+        console.log(`   Service ${serviceId}: ${this.scheduleData.calendarDates[serviceId].size} dates`);
+      });
+    }
     
     // Verify specific stops from your example
     console.log(`\n🔍 Verifying key stops:`);
@@ -116,7 +133,7 @@ async loadSchedules() {
   try {
     console.log('Attempting to load from local GTFS files...');
     
-    const fileNames = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt'];
+    const fileNames = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt', 'calendar_dates.txt']; // Added calendar_dates.txt
     const files = {};
     
     for (const fileName of fileNames) {
@@ -139,14 +156,16 @@ async loadSchedules() {
     const stops = this.parseCSV(files['stops.txt'] || '');
     const stopTimes = this.parseCSV(files['stop_times.txt'] || '');
     const shapes = this.parseCSV(files['shapes.txt'] || '');
+    const calendarDates = this.parseCSV(files['calendar_dates.txt'] || ''); // NEW
     
-    console.log(`Local parsed counts: ${routes.length} routes, ${trips.length} trips, ${stops.length} stops`);
+    console.log(`Local parsed counts: ${routes.length} routes, ${trips.length} trips, ${stops.length} stops, ${calendarDates.length} calendar dates`);
     
     this.scheduleData.routesMap = this.createRoutesMap(routes);
     this.scheduleData.tripsMap = this.createTripsMap(trips);
     this.scheduleData.stops = this.createStopsMap(stops);
     this.scheduleData.stopTimesByTrip = this.createStopTimesByTrip(stopTimes);
     this.scheduleData.shapes = this.createShapesMap(shapes);
+    this.scheduleData.calendarDates = this.createCalendarDatesMap(calendarDates); // NEW
     
     console.log(`[${new Date().toISOString()}] Loaded schedule data from local fallback files`);
     
@@ -403,6 +422,65 @@ parseCSVLineSimple(line) {
 
     console.log(`[Shapes] Loaded ${Object.keys(shapes).length} shape IDs`);
     return shapes;
+  }
+
+  // NEW: Create calendar dates map
+  createCalendarDatesMap(calendarDatesArray) {
+    console.log(`\n📅 createCalendarDatesMap: Processing ${calendarDatesArray?.length || 0} entries`);
+    
+    const map = {};
+    let validCount = 0;
+    let skippedCount = 0;
+    
+    calendarDatesArray.forEach(entry => {
+      try {
+        const serviceId = entry.service_id;
+        const date = entry.date;
+        const exceptionType = parseInt(entry.exception_type, 10);
+        
+        if (!serviceId || !date) {
+          console.warn('Skipping calendar entry missing service_id or date:', entry);
+          skippedCount++;
+          return;
+        }
+        
+        // We only care about exception_type=1 (service added)
+        if (exceptionType === 1) {
+          if (!map[serviceId]) {
+            map[serviceId] = new Set();
+          }
+          map[serviceId].add(date);
+          validCount++;
+        } else {
+          // exception_type=2 (service removed) - we ignore for now
+          skippedCount++;
+        }
+      } catch (err) {
+        console.error('Error processing calendar entry:', err.message, entry);
+        skippedCount++;
+      }
+    });
+    
+    console.log(`📊 Calendar dates: ${validCount} valid entries, ${skippedCount} skipped`);
+    console.log(`   Service IDs: ${Object.keys(map).length}`);
+    
+    // Show some stats
+    const serviceIds = Object.keys(map);
+    if (serviceIds.length > 0) {
+      const totalDates = serviceIds.reduce((sum, id) => sum + map[id].size, 0);
+      console.log(`   Total scheduled dates: ${totalDates}`);
+      
+      // Show first few service IDs
+      serviceIds.slice(0, 3).forEach(serviceId => {
+        const dates = Array.from(map[serviceId]).sort();
+        console.log(`   Service ${serviceId}: ${map[serviceId].size} dates`);
+        if (dates.length > 0) {
+          console.log(`     First: ${dates[0]}, Last: ${dates[dates.length - 1]}`);
+        }
+      });
+    }
+    
+    return map;
   }
 }
 
