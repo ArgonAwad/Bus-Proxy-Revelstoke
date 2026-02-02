@@ -334,5 +334,6 @@ export {
   calculateVirtualBusPosition,   // New main function
   getRouteDisplayName,
   timeStringToSeconds,
-  getScheduleTimeInSeconds
+  getScheduleTimeInSeconds,
+  isTripActiveInStaticSchedule
 };
