@@ -14,7 +14,8 @@ import {
   getRouteDisplayName,
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
-  isTripActiveInStaticSchedule 
+  isTripActiveInStaticSchedule,
+  getStaticScheduleForTrip
 } from './virtual-vehicles.js';
 
 const scheduleLoader = new ScheduleLoader();
@@ -206,17 +207,13 @@ app.get('/api/virtuals', async (req, res) => {
           // Still try to show at first stop for all_virtuals
         }
         
-        // Use the original calculation method as fallback
-        const info = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+        // Use the GTFS-RT calculation method as fallback
+        const info = findCurrentSegmentAndProgress(stopTimes, currentTimeSec);
         if (info) {
           const { currentStop, nextStop, progress: rtProgress } = info;
-          const fallbackPos = calculateCurrentPosition(
-            currentStop,
-            nextStop,
-            rtProgress,
-            schedule,
-            tripId
-          );
+          
+          // For GTFS-RT fallback, use calculateVirtualBusPosition with current time
+          const fallbackPos = calculateVirtualBusPosition(tripId, currentTimeSec, schedule);
           
           if (fallbackPos) {
             position = {
@@ -397,17 +394,15 @@ app.get('/api/buses', async (req, res) => {
 
         if (!isTripCurrentlyActive(stopTimes, Math.floor(Date.now() / 1000))) return;
 
-        const info = findCurrentStopAndProgress(stopTimes, Math.floor(Date.now() / 1000));
+        const info = findCurrentSegmentAndProgress(stopTimes, Math.floor(Date.now() / 1000));
         if (!info) return;
 
         const { currentStop, nextStop, progress } = info;
 
-        const position = calculateCurrentPosition(
-          currentStop,
-          nextStop,
-          progress,
-          schedule,
-          trip.tripId
+        const position = calculateVirtualBusPosition(
+          trip.tripId,
+          Math.floor(Date.now() / 1000),
+          schedule
         );
 
         const vehicleId = `VIRT-${blockId}`;
@@ -573,7 +568,7 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
       const active = isTripCurrentlyActive(stopTimes, currentTimeSec);
       if (!active && !allVirtuals) return;  // Skip inactive unless all
 
-      const info = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+      const info = findCurrentSegmentAndProgress(stopTimes, currentTimeSec);
 
       const shapeId = getShapeIdFromTrip(trip.tripId, schedule);
 
@@ -583,7 +578,7 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
 
       if (info) {
         const { currentStop, nextStop, progress } = info;
-        position = calculateCurrentPosition(currentStop, nextStop, progress, schedule, trip.tripId);
+        position = calculateVirtualBusPosition(trip.tripId, currentTimeSec, schedule);
         shapeUsed = true;  // Assume shape success if position calculated — adjust based on logs
       } else {
         fallbackReason = 'No stop info';
@@ -692,7 +687,7 @@ app.get('/api/debug/time-verification', async (req, res) => {
         minus30Seconds: isActiveMinus30,
         sensitivity: isActivePlus30 !== isActive || isActiveMinus30 !== isActive ? 
           "SENSITIVE (±30s changes result)" : "STABLE (±30s same result)",
-        currentStopInfo: findCurrentStopAndProgress(stopTimes, serverTimeSec)
+        currentStopInfo: findCurrentSegmentAndProgress(stopTimes, serverTimeSec)
       };
     }
     
@@ -854,7 +849,7 @@ app.get('/api/debug/test-trip-activity', async (req, res) => {
     const testResults = testTimes.map(test => {
       const testTimeSec = currentTimeSec + test.offset;
       const isActive = isTripCurrentlyActive(stopTimes, testTimeSec);
-      const stopInfo = findCurrentStopAndProgress(stopTimes, testTimeSec);
+      const stopInfo = findCurrentSegmentAndProgress(stopTimes, testTimeSec);
       
       return {
         testTimeLabel: test.label,
@@ -997,7 +992,7 @@ app.get('/api/debug/test-all-trip-activity', async (req, res) => {
       // Get current stop info if active
       let currentStopInfo = null;
       if (status === 'ACTIVE' || status === 'STARTING_SOON' || status === 'ENDING_SOON') {
-        currentStopInfo = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+        currentStopInfo = findCurrentSegmentAndProgress(stopTimes, currentTimeSec);
       }
       
       // Check if within our time window of interest
@@ -1259,7 +1254,7 @@ app.get('/api/debug/test-all-trips-enhanced', async (req, res) => {
       else status = 'FAR_PAST';
       
       // Get current progress if relevant
-      const currentStopInfo = findCurrentStopAndProgress(stopTimes, currentTimeSec);
+      const currentStopInfo = findCurrentSegmentAndProgress(stopTimes, currentTimeSec);
       
       // Apply filters
       if (filterStatus && status !== filterStatus.toUpperCase()) continue;
