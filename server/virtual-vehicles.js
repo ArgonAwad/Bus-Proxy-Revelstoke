@@ -330,6 +330,12 @@ function timeStringToSeconds(timeStr) {
 
 // 12. Main function to calculate virtual bus position (for server.js to use)
 function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, operatorId = '36') {
+  // Check if trip is scheduled today
+  if (!isTripScheduledToday(tripId, scheduleData)) {
+    console.log(`[calculateVirtualBusPosition] ${tripId} not scheduled today`);
+    return null;
+  }
+  
   // Use REAL server time, not feed time
   const position = calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, operatorId);
   
@@ -395,6 +401,62 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   return isActive;
 }
 
+// 15. Get today's date in YYYYMMDD format
+function getCurrentDateStr() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = (today.getMonth() + 1).toString().padStart(2, '0');
+  const day = today.getDate().toString().padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+// 16. Check if a trip should run today based on service_id
+function isTripScheduledToday(tripId, scheduleData) {
+  if (!scheduleData?.tripsMap || !scheduleData?.calendarDates) {
+    console.log(`[isTripScheduledToday] Missing schedule data for ${tripId}`);
+    return true; // Default to true if we can't check (backward compatibility)
+  }
+  
+  const trip = scheduleData.tripsMap[tripId];
+  if (!trip || !trip.service_id) {
+    console.log(`[isTripScheduledToday] No service_id for ${tripId}`);
+    return false; // If no service_id, assume not scheduled
+  }
+  
+  const todayStr = getCurrentDateStr();
+  const serviceDates = scheduleData.calendarDates[trip.service_id];
+  
+  if (!serviceDates) {
+    console.log(`[isTripScheduledToday] No calendar dates for service ${trip.service_id} (trip ${tripId})`);
+    return false; // If no calendar dates for this service, assume it doesn't run
+  }
+  
+  const isRunningToday = serviceDates.has(todayStr);
+  
+  // Log occasional checks (1% of the time) to avoid spam
+  if (Math.random() < 0.01 || isRunningToday === false) {
+    console.log(`[isTripScheduledToday] ${tripId} (service ${trip.service_id}) on ${todayStr}: ${isRunningToday ? '✅ RUNS' : '❌ NOT TODAY'}`);
+  }
+  
+  return isRunningToday;
+}
+
+// 17. Enhanced version that checks both time AND date
+function isTripActiveAndScheduled(tripId, scheduleData, currentScheduleSec, operatorId = '36') {
+  // First check if trip is scheduled today
+  if (!isTripScheduledToday(tripId, scheduleData)) {
+    return false;
+  }
+  
+  // Then check if it's active in the schedule (time-wise)
+  const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+  if (!staticStopTimes || staticStopTimes.length === 0) {
+    return false;
+  }
+  
+  return isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
+}
+
 // Helper function to format seconds as HH:MM:SS
 function formatTime(seconds) {
   const hrs = Math.floor(seconds / 3600);
@@ -414,5 +476,7 @@ export {
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
   isTripActiveInStaticSchedule,
-  getStaticScheduleForTrip
+  getStaticScheduleForTrip,
+  isTripScheduledToday,           // NEW
+  isTripActiveAndScheduled        // NEW
 };
