@@ -386,7 +386,7 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   }
   
   // With 60-second buffer for practical purposes
-  const buffer = 60;
+  const buffer = 300;
   const isActive = adjustedCurrentTime >= (firstTime - buffer) && adjustedCurrentTime <= (adjustedLastTime + buffer);
   
   // Debug logging
