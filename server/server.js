@@ -101,6 +101,7 @@ async function ensureScheduleLoaded() {
 
 // Main virtuals endpoint (updated)
 // Main virtuals endpoint (minimal, on-demand)
+// Main virtuals endpoint (updated)
 app.get('/api/virtuals', async (req, res) => {
   try {
     const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
@@ -191,7 +192,7 @@ app.get('/api/virtuals', async (req, res) => {
       }
 
       // Calculate position using static schedule
-     position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule, operatorId);
+      let position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule, operatorId);
       
       if (!position) {
         console.log(`[VIRTUALS] Could not calculate position for ${tripId}`);
@@ -310,14 +311,6 @@ app.get('/api/virtuals', async (req, res) => {
     });
   }
 });
-
-// Helper function to format seconds as HH:MM:SS
-function formatTime(seconds) {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-}
 
 // Keep /api/buses (real + virtual combined) — simplified
 app.get('/api/buses', async (req, res) => {
