@@ -662,6 +662,74 @@ app.get('/api/buses', async (req, res) => {
   }
 });
 
+// Debug endpoint to see trip matching
+app.get('/api/debug/trip-matching', async (req, res) => {
+  try {
+    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
+    
+    // Fetch real vehicle positions
+    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
+    await ensureScheduleLoaded();
+    const schedule = scheduleLoader.scheduleData;
+    
+    // Get real vehicle trip IDs
+    const realVehicleTripIds = new Set();
+    const realVehicles = [];
+    
+    if (vehicleResult.success && vehicleResult.data?.entity) {
+      vehicleResult.data.entity.forEach(entity => {
+        const tripId = entity.vehicle?.trip?.tripId;
+        if (tripId) {
+          realVehicleTripIds.add(tripId);
+          realVehicles.push({
+            tripId: tripId,
+            routeId: entity.vehicle?.trip?.routeId,
+            blockId: entity.vehicle?.trip?.blockId || extractBlockIdFromTripId(tripId),
+            position: entity.vehicle?.position
+          });
+        }
+      });
+    }
+    
+    // Get all static trip IDs
+    const staticTripIds = Object.keys(schedule.stopTimesByTrip || {});
+    
+    // Check which static trips match real vehicles
+    const matchingAnalysis = staticTripIds.map(tripId => {
+      const hasRealVehicle = realVehicleTripIds.has(tripId);
+      const staticTrip = schedule.tripsMap?.[tripId];
+      
+      return {
+        tripId,
+        routeId: staticTrip?.route_id || 'unknown',
+        blockId: staticTrip?.block_id || extractBlockIdFromTripId(tripId),
+        hasRealVehicle,
+        hasStaticSchedule: !!schedule.stopTimesByTrip?.[tripId],
+        isActiveNow: isTripActiveInStaticSchedule(
+          getStaticScheduleForTrip(tripId, schedule), 
+          getScheduleTimeInSeconds(operatorId)
+        )
+      };
+    });
+    
+    res.json({
+      realVehicles,
+      realVehicleCount: realVehicleTripIds.size,
+      staticTripCount: staticTripIds.length,
+      matchingAnalysis,
+      currentTime: {
+        unix: Math.floor(Date.now() / 1000),
+        schedule: getScheduleTimeInSeconds(operatorId),
+        formatted: formatTime(getScheduleTimeInSeconds(operatorId))
+      }
+    });
+    
+  } catch (error) {
+    console.error('[DEBUG] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Debug endpoint to inspect virtual position calculation
 app.get('/api/debug/virtuals-detail', async (req, res) => {
   try {
