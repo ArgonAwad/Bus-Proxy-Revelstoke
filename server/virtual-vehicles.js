@@ -486,6 +486,223 @@ function getScheduleTimeFromUnix(unixTimestamp, operatorId = '36') {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
+// NEW: Check if block is active (with 5-minute buffer before first trip)
+function isBlockActive(blockId, scheduleData, currentScheduleSec, operatorId = '36') {
+  // Get all trips in this block
+  const tripsInBlock = [];
+  for (const [tripId, trip] of Object.entries(scheduleData.tripsMap)) {
+    if (trip.block_id === blockId) {
+      const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+      if (staticStopTimes && staticStopTimes.length > 0) {
+        const firstTime = timeStringToSeconds(staticStopTimes[0]?.departure_time || staticStopTimes[0]?.arrival_time);
+        const lastTime = timeStringToSeconds(staticStopTimes[staticStopTimes.length - 1]?.arrival_time || staticStopTimes[staticStopTimes.length - 1]?.departure_time);
+        
+        if (!isNaN(firstTime) && !isNaN(lastTime)) {
+          tripsInBlock.push({
+            tripId,
+            route_id: trip.route_id,
+            firstTime,
+            lastTime
+          });
+        }
+      }
+    }
+  }
+  
+  if (tripsInBlock.length === 0) return false;
+  
+  // Sort trips by start time
+  tripsInBlock.sort((a, b) => a.firstTime - b.firstTime);
+  
+  const firstTrip = tripsInBlock[0];
+  const lastTrip = tripsInBlock[tripsInBlock.length - 1];
+  
+  // Handle midnight crossing
+  let adjustedLastTime = lastTrip.lastTime;
+  let adjustedCurrentTime = currentScheduleSec;
+  
+  if (lastTrip.lastTime < firstTrip.firstTime) {
+    adjustedLastTime = lastTrip.lastTime + 86400;
+    if (currentScheduleSec < firstTrip.firstTime) {
+      adjustedCurrentTime = currentScheduleSec + 86400;
+    }
+  }
+  
+  // Block is active if current time is between (first trip start - 5 minutes) and last trip end
+  const buffer = 300; // 5 minutes before first trip
+  return adjustedCurrentTime >= (firstTrip.firstTime - buffer) && adjustedCurrentTime <= adjustedLastTime;
+}
+
+// NEW: Find current or most recent trip in block
+function findCurrentOrRecentTripInBlock(blockId, scheduleData, currentScheduleSec, operatorId = '36') {
+  const tripsInBlock = [];
+  
+  // Collect all trips in block with their times
+  for (const [tripId, trip] of Object.entries(scheduleData.tripsMap)) {
+    if (trip.block_id === blockId) {
+      const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+      if (staticStopTimes && staticStopTimes.length > 0) {
+        const firstTime = timeStringToSeconds(staticStopTimes[0]?.departure_time || staticStopTimes[0]?.arrival_time);
+        const lastTime = timeStringToSeconds(staticStopTimes[staticStopTimes.length - 1]?.arrival_time || staticStopTimes[staticStopTimes.length - 1]?.departure_time);
+        
+        if (!isNaN(firstTime) && !isNaN(lastTime)) {
+          tripsInBlock.push({
+            tripId,
+            route_id: trip.route_id,
+            firstTime,
+            lastTime
+          });
+        }
+      }
+    }
+  }
+  
+  if (tripsInBlock.length === 0) return null;
+  
+  // Sort trips by start time
+  tripsInBlock.sort((a, b) => a.firstTime - b.firstTime);
+  
+  // Handle midnight crossing for comparisons
+  let adjustedCurrentTime = currentScheduleSec;
+  const lastTrip = tripsInBlock[tripsInBlock.length - 1];
+  
+  if (lastTrip.lastTime < tripsInBlock[0].firstTime && currentScheduleSec < tripsInBlock[0].firstTime) {
+    adjustedCurrentTime = currentScheduleSec + 86400;
+  }
+  
+  // Find which trip we're in
+  for (const trip of tripsInBlock) {
+    let adjustedLastTime = trip.lastTime;
+    if (trip.lastTime < trip.firstTime) {
+      adjustedLastTime = trip.lastTime + 86400;
+    }
+    
+    if (adjustedCurrentTime >= trip.firstTime && adjustedCurrentTime <= adjustedLastTime) {
+      return {
+        tripId: trip.tripId,
+        routeId: trip.route_id,
+        isActive: true,
+        isDuringTrip: true
+      };
+    }
+  }
+  
+  // If not during a trip, find the most recent completed trip
+  let mostRecentTrip = null;
+  let smallestTimeSince = Infinity;
+  
+  for (const trip of tripsInBlock) {
+    let adjustedLastTime = trip.lastTime;
+    let tripAdjustedCurrentTime = currentScheduleSec;
+    
+    // Handle midnight crossing
+    if (trip.lastTime < trip.firstTime) {
+      adjustedLastTime = trip.lastTime + 86400;
+      if (currentScheduleSec < trip.firstTime) {
+        tripAdjustedCurrentTime = currentScheduleSec + 86400;
+      }
+    }
+    
+    if (tripAdjustedCurrentTime > adjustedLastTime) {
+      const timeSince = tripAdjustedCurrentTime - adjustedLastTime;
+      if (timeSince < smallestTimeSince) {
+        smallestTimeSince = timeSince;
+        mostRecentTrip = trip;
+      }
+    }
+  }
+  
+  if (mostRecentTrip) {
+    return {
+      tripId: mostRecentTrip.tripId,
+      routeId: mostRecentTrip.route_id,
+      isActive: true, // Still show during layover
+      isDuringTrip: false,
+      timeSinceLastTrip: smallestTimeSince
+    };
+  }
+  
+  // Check if we're before the first trip (with 5-minute buffer)
+  const firstTrip = tripsInBlock[0];
+  const buffer = 300; // 5 minutes
+  if (adjustedCurrentTime >= (firstTrip.firstTime - buffer) && adjustedCurrentTime < firstTrip.firstTime) {
+    return {
+      tripId: firstTrip.tripId,
+      routeId: firstTrip.route_id,
+      isActive: true,
+      isDuringTrip: false,
+      timeUntilTrip: firstTrip.firstTime - adjustedCurrentTime
+    };
+  }
+  
+  return null;
+}
+
+// NEW: Block-based virtual bus position calculation
+function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeSec, operatorId = '36') {
+  const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
+  
+  // Check if block should be active
+  if (!isBlockActive(blockId, scheduleData, scheduleTimeSec, operatorId)) {
+    console.log(`[calculateVirtualBusPositionForBlock] Block ${blockId} not active`);
+    return null;
+  }
+  
+  // Find current or most recent trip
+  const tripInfo = findCurrentOrRecentTripInBlock(blockId, scheduleData, scheduleTimeSec, operatorId);
+  if (!tripInfo) {
+    console.log(`[calculateVirtualBusPositionForBlock] No trip found for block ${blockId}`);
+    return null;
+  }
+  
+  // If during a trip, calculate normal position
+  if (tripInfo.isDuringTrip) {
+    const position = calculateVirtualBusPosition(tripInfo.tripId, scheduleTimeSec, scheduleData, operatorId);
+    if (position) {
+      return {
+        ...position,
+        tripId: tripInfo.tripId,
+        routeId: tripInfo.routeId,
+        blockId: blockId,
+        status: 'IN_TRANSIT',
+        layover: false
+      };
+    }
+  } else {
+    // During layover or before first trip
+    // Get last stop of the trip
+    const staticStopTimes = getStaticScheduleForTrip(tripInfo.tripId, scheduleData);
+    if (staticStopTimes && staticStopTimes.length > 0) {
+      const lastStop = staticStopTimes[staticStopTimes.length - 1];
+      const stopCoords = scheduleData.stops[lastStop.stop_id];
+      if (stopCoords) {
+        return {
+          latitude: stopCoords.lat,
+          longitude: stopCoords.lon,
+          bearing: null,
+          speed: 0,
+          progress: 1,
+          segment: {
+            start: lastStop.stop_id,
+            end: lastStop.stop_id
+          },
+          tripId: tripInfo.tripId,
+          routeId: tripInfo.routeId,
+          blockId: blockId,
+          status: tripInfo.timeUntilTrip ? 'BEFORE_FIRST_TRIP' : 'LAYOVER',
+          layover: true,
+          timeInfo: tripInfo.timeSinceLastTrip ? 
+            `Layover: ${Math.round(tripInfo.timeSinceLastTrip / 60)} min` :
+            tripInfo.timeUntilTrip ? 
+            `Starts in ${Math.round(tripInfo.timeUntilTrip / 60)} min` : 'Layover'
+        };
+      }
+    }
+  }
+  
+  return null;
+}
+
 // Helper function to format seconds as HH:MM:SS
 function formatTime(seconds) {
   const hrs = Math.floor(seconds / 3600);
@@ -501,12 +718,15 @@ export {
   isTripCurrentlyActive,
   findCurrentSegmentAndProgress,
   calculateVirtualBusPosition,
+  calculateVirtualBusPositionForBlock, // NEW: Block-based calculation
   getRouteDisplayName,
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
   isTripActiveInStaticSchedule,
   getStaticScheduleForTrip,
-  isTripScheduledToday,           // NEW
-  isTripActiveAndScheduled,       // NEW
-  getScheduleTimeFromUnix         // NEW: For converting cached timestamps
+  isTripScheduledToday,
+  isTripActiveAndScheduled,
+  getScheduleTimeFromUnix,
+  isBlockActive,                    // NEW
+  findCurrentOrRecentTripInBlock    // NEW
 };
