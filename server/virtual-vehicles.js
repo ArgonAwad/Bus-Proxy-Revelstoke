@@ -304,7 +304,7 @@ function calculateBearing(pointA, pointB) {
            Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
   
   let bearing = Math.atan2(y, x) * 180 / Math.PI;
-  bearing = (bearing + 360) % 360;
+  bearing = (bearing + 180) % 360;
   
   return Math.round(bearing);
 }
