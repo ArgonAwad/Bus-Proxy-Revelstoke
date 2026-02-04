@@ -17,7 +17,8 @@ import {
   isTripActiveInStaticSchedule,
   getStaticScheduleForTrip,
   isTripScheduledToday,           // NEW: Add this import
-  isTripActiveAndScheduled        // NEW: Add this import
+  isTripActiveAndScheduled,        // NEW: Add this import
+  getScheduleTimeFromUnix
 } from './virtual-vehicles.js';
 
 //construct Cache to throttle back virtual bus feed to 5 seconds
