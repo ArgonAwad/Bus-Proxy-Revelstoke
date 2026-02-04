@@ -11,14 +11,17 @@ import {
   isTripCurrentlyActive,
   findCurrentSegmentAndProgress,  // Changed name
   calculateVirtualBusPosition,    // New function
+  calculateVirtualBusPositionForBlock, // NEW: Block-based calculation
   getRouteDisplayName,
   timeStringToSeconds,            
   getScheduleTimeInSeconds,
   isTripActiveInStaticSchedule,
   getStaticScheduleForTrip,
   isTripScheduledToday,           // NEW: Add this import
-  isTripActiveAndScheduled,        // NEW: Add this import
-  getScheduleTimeFromUnix
+  isTripActiveAndScheduled,       // NEW: Add this import
+  getScheduleTimeFromUnix,
+  isBlockActive,                  // NEW
+  findCurrentOrRecentTripInBlock  // NEW
 } from './virtual-vehicles.js';
 
 //construct Cache to throttle back virtual bus feed to 5 seconds
@@ -34,6 +37,53 @@ const GTFS_PROTO_URL = 'https://raw.githubusercontent.com/google/transit/master/
 const BASE_URL = 'https://bct.tmix.se/gtfs-realtime';
 const DEFAULT_OPERATOR_ID = '36';
 let root = null;
+
+// Helper to get unique block IDs from trips
+function getBlockIdsFromTripIds(tripIds, scheduleData) {
+  const blockIds = new Set();
+  
+  tripIds.forEach(tripId => {
+    const blockId = extractBlockIdFromTripId(tripId);
+    if (blockId) {
+      // Also check if block exists in schedule
+      let blockExists = false;
+      for (const trip of Object.values(scheduleData.tripsMap || {})) {
+        if (trip.block_id === blockId) {
+          blockExists = true;
+          break;
+        }
+      }
+      if (blockExists) {
+        blockIds.add(blockId);
+      }
+    }
+  });
+  
+  return Array.from(blockIds);
+}
+
+// Helper to get all trips for a block
+function getTripIdsForBlock(blockId, scheduleData) {
+  const tripIds = [];
+  
+  for (const [tripId, trip] of Object.entries(scheduleData.tripsMap || {})) {
+    if (trip.block_id === blockId) {
+      tripIds.push(tripId);
+    }
+  }
+  
+  return tripIds;
+}
+
+// Helper to get route ID for a block (use first trip's route)
+function getRouteIdForBlock(blockId, scheduleData) {
+  for (const trip of Object.values(scheduleData.tripsMap || {})) {
+    if (trip.block_id === blockId) {
+      return trip.route_id;
+    }
+  }
+  return 'UNKNOWN';
+}
 
 //clean caches periodically
 setInterval(() => {
@@ -225,128 +275,133 @@ app.get('/api/virtuals', async (req, res) => {
     console.log(`[VIRTUALS] Found ${realVehicleTripIds.size} real vehicles with positions`);
 
     const virtualEntities = [];
-    const processedTrips = new Set();
+    const processedBlocks = new Set(); // Track blocks instead of trips
 
-    tripResult.data.entity?.forEach((entity, index) => {
+    // Get all unique block IDs from the GTFS-RT feed
+    const blockIdsFromFeed = new Set();
+    tripResult.data.entity?.forEach(entity => {
       const tu = entity.tripUpdate;
-      if (!tu?.trip?.tripId) {
-        return;
+      if (tu?.trip?.tripId) {
+        const blockId = extractBlockIdFromTripId(tu.trip.tripId);
+        if (blockId) blockIdsFromFeed.add(blockId);
       }
+    });
 
-      const trip = tu.trip;
-      const tripId = trip.tripId;
+    // Also get blocks from schedule for completeness
+    const allBlockIds = getBlockIdsFromTripIds(Object.keys(schedule.stopTimesByTrip || {}), schedule);
+
+    // Combine and deduplicate
+    const allBlocks = new Set([...blockIdsFromFeed, ...allBlockIds]);
+
+    console.log(`[VIRTUALS] Processing ${allBlocks.size} unique blocks`);
+
+    // Process each block
+    allBlocks.forEach(blockId => {
+      // Skip if already processed
+      if (processedBlocks.has(blockId)) return;
+      processedBlocks.add(blockId);
       
-      // Avoid duplicate processing
-      if (processedTrips.has(tripId)) {
+      // Get trips in this block
+      const tripIdsInBlock = getTripIdsForBlock(blockId, schedule);
+      if (tripIdsInBlock.length === 0) {
+        console.log(`[VIRTUALS] No trips found for block ${blockId}`);
         return;
       }
-      processedTrips.add(tripId);
-
-      // Get static schedule for this trip
-      const staticStopTimes = getStaticScheduleForTrip(tripId, schedule);
-      if (!staticStopTimes || staticStopTimes.length === 0) {
-        console.log(`[VIRTUALS] No static schedule found for ${tripId}`);
-        return; // Can't create virtual without schedule
-      }
-
-      // NEW: Check if trip is scheduled today (based on calendar_dates)
-      if (!isTripScheduledToday(tripId, schedule)) {
-        console.log(`[VIRTUALS] Skipping ${tripId} - not scheduled today`);
-        return;
-      }
-
-      // Check if trip is active in static schedule (with midnight crossing support)
-      const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
-      const isActiveInSchedule = isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
-      if (!isActiveInSchedule) {
-        console.log(`[VIRTUALS] Skipping ${tripId} - not active in static schedule`);
-        return;
-      }
-
-      console.log(`[VIRTUALS] ${tripId} is active in static schedule (${staticStopTimes.length} stops)`);
-
-      // In normal mode: skip if real vehicle exists for this trip
-      // In all_virtuals mode: show even if real vehicle exists
-      const hasRealVehicle = realVehicleTripIds.has(tripId);
-      if (!allVirtuals && hasRealVehicle) {
-        console.log(`[VIRTUALS] Skipping ${tripId} - real vehicle exists (normal mode)`);
-        return;
-      }
-
-      // Calculate position using static schedule
-      const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
-      let position = calculateVirtualBusPosition(tripId, scheduleTimeSec, schedule, operatorId);      
-      if (!position) {
-        console.log(`[VIRTUALS] Could not calculate position for ${tripId}`);
-        
-        // For all_virtuals mode, show at first stop as fallback
-        if (allVirtuals) {
-          const firstStop = staticStopTimes[0];
-          const firstStopCoords = schedule.stops[firstStop.stop_id];
-          if (firstStopCoords) {
-            console.log(`[VIRTUALS] Showing ${tripId} at first stop as fallback`);
-            position = {
-              latitude: firstStopCoords.lat,
-              longitude: firstStopCoords.lon,
-              bearing: null,
-              speed: 0,
-              progress: 0
-            };
-          }
-        } else {
-          return;
+      
+      // Check if ANY trip in this block is scheduled today
+      let hasScheduledTripToday = false;
+      let firstScheduledTripId = null;
+      
+      for (const tripId of tripIdsInBlock) {
+        if (isTripScheduledToday(tripId, schedule)) {
+          hasScheduledTripToday = true;
+          firstScheduledTripId = tripId;
+          break;
         }
       }
-
-      // If we have a position, create the virtual entity
-      if (position) {
-        const blockId = extractBlockIdFromTripId(tripId) || 'UNKNOWN';
-        const vehicleId = `VIRT-${blockId}-${tripId}`;
-        
-        // Determine status based on progress
-        let currentStatus = 2; // IN_TRANSIT_TO (default)
-        if (position.progress <= 0) currentStatus = 1; // STOPPED_AT
-        if (position.progress >= 1) currentStatus = 0; // INCOMING_AT
-        
-        const virtualEntity = {
-          id: vehicleId,
-          vehicle: {
-            trip: {
-              tripId: tripId,
-              startTime: trip.startTime,
-              startDate: trip.startDate,
-              routeId: trip.routeId,
-              directionId: trip.directionId || 0,
-              blockId: blockId
-            },
-            position: {
-              latitude: position.latitude,
-              longitude: position.longitude,
-              bearing: position.bearing || null,
-              speed: position.speed || 0
-            },
-            currentStopSequence: 1,
-            currentStatus: currentStatus,
-            timestamp: currentTimeSec,
-            stopId: position.segment?.start || staticStopTimes[0]?.stop_id,
-            vehicle: {
-              id: vehicleId,
-              label: `Ghost ${getRouteDisplayName(trip.routeId)}`,
-              is_virtual: true
-            },
-            progress: position.progress?.toFixed(3) || '0.000',
-            metadata: {
-              source: position.segment ? 'static_schedule' : 'first_stop_fallback',
-              all_virtuals_mode: allVirtuals,
-              has_real_vehicle: hasRealVehicle,
-              crossed_midnight: position.crossedMidnight || false
-            }
-          }
-        };
-        
-        virtualEntities.push(virtualEntity);
-        console.log(`[VIRTUALS] Added virtual bus for ${tripId} at ${position.latitude},${position.longitude} (real vehicle: ${hasRealVehicle})`);
+      
+      if (!hasScheduledTripToday) {
+        console.log(`[VIRTUALS] Block ${blockId} has no trips scheduled today`);
+        return;
       }
+      
+      // Check if block is active (with 5-minute buffer)
+      const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
+      if (!isBlockActive(blockId, schedule, currentScheduleSec, operatorId)) {
+        console.log(`[VIRTUALS] Block ${blockId} not active now`);
+        return;
+      }
+      
+      // Calculate position for the block
+      const position = calculateVirtualBusPositionForBlock(blockId, schedule, currentTimeSec, operatorId);
+      if (!position) {
+        console.log(`[VIRTUALS] Could not calculate position for block ${blockId}`);
+        return;
+      }
+      
+      // Get trip details
+      const displayTripId = position.tripId || firstScheduledTripId;
+      const displayTrip = schedule.tripsMap?.[displayTripId];
+      
+      // Check if real vehicle exists for any trip in this block
+      const hasRealVehicle = tripIdsInBlock.some(tripId => realVehicleTripIds.has(tripId));
+      
+      // In normal mode: skip if real vehicle exists for this block
+      // In all_virtuals mode: show even if real vehicle exists
+      if (!allVirtuals && hasRealVehicle) {
+        console.log(`[VIRTUALS] Skipping block ${blockId} - real vehicle exists (normal mode)`);
+        return;
+      }
+      
+      const vehicleId = `VIRT-${blockId}`;
+      
+      // Determine status
+      let currentStatus = 2; // IN_TRANSIT_TO (default)
+      if (position.layover) currentStatus = 1; // STOPPED_AT during layover
+      if (position.progress <= 0) currentStatus = 1; // STOPPED_AT
+      if (position.progress >= 1) currentStatus = 0; // INCOMING_AT
+      
+      const virtualEntity = {
+        id: vehicleId,
+        vehicle: {
+          trip: {
+            tripId: displayTripId,
+            startTime: '', // Not needed for block-based
+            startDate: '', // Not needed for block-based
+            routeId: position.routeId || displayTrip?.route_id || 'UNKNOWN',
+            directionId: displayTrip?.direction_id || 0,
+            blockId: blockId
+          },
+          position: {
+            latitude: position.latitude,
+            longitude: position.longitude,
+            bearing: position.bearing || null,
+            speed: position.speed || 0
+          },
+          currentStopSequence: 1,
+          currentStatus: currentStatus,
+          timestamp: currentTimeSec,
+          stopId: position.segment?.start || position.segment?.end,
+          vehicle: {
+            id: vehicleId,
+            label: `Ghost ${getRouteDisplayName(position.routeId || displayTrip?.route_id)}`,
+            is_virtual: true
+          },
+          progress: position.progress?.toFixed(3) || '0.000',
+          metadata: {
+            source: 'block_schedule',
+            all_virtuals_mode: allVirtuals,
+            has_real_vehicle: hasRealVehicle,
+            crossed_midnight: position.crossedMidnight || false,
+            layover: position.layover || false,
+            status: position.status || 'UNKNOWN',
+            block_trips_count: tripIdsInBlock.length
+          }
+        }
+      };
+      
+      virtualEntities.push(virtualEntity);
+      console.log(`[VIRTUALS] Added virtual bus for block ${blockId} (${tripIdsInBlock.length} trips) at ${position.latitude},${position.longitude} (real vehicle: ${hasRealVehicle}, layover: ${position.layover})`);
     });
 
     const took = Date.now() - start;
@@ -365,7 +420,8 @@ app.get('/api/virtuals', async (req, res) => {
         mode: allVirtuals ? 'all_virtuals' : 'missing_only',
         generated: virtualEntities.length,
         totalTripsInFeed: tripResult.data.entity?.length || 0,
-        processedTrips: processedTrips.size,
+        processedBlocks: processedBlocks.size,
+        processedTrips: Object.keys(schedule.stopTimesByTrip).length,
         realVehiclesCount: realVehicleTripIds.size,
         scheduleInfo: {
           tripsLoaded: Object.keys(schedule.tripsMap).length,
@@ -394,7 +450,7 @@ app.get('/api/virtuals', async (req, res) => {
       timestamp: currentTimeSec
     });
     
-    console.log(`[VIRTUALS] Done: ${virtualEntities.length} virtual buses in ${took}ms (mode: ${allVirtuals ? 'all' : 'missing-only'}) | Cached for 5s`);
+    console.log(`[VIRTUALS] Done: ${virtualEntities.length} virtual buses (from ${processedBlocks.size} blocks) in ${took}ms (mode: ${allVirtuals ? 'all' : 'missing-only'}) | Cached for 5s`);
     res.json(response);
     
   } catch (err) {
@@ -448,7 +504,7 @@ app.get('/api/buses', async (req, res) => {
         console.log(`[/api/buses] Using cached virtual buses (${Date.now() - cached.timestamp}ms old)`);
         virtualEntities = cached.virtualEntities;
       } else {
-        // Generate fresh virtual buses - USE STATIC SCHEDULE LIKE /api/virtuals
+        // Generate fresh virtual buses - USE BLOCK-BASED APPROACH
         await ensureScheduleLoaded();
         const schedule = scheduleLoader.scheduleData;
 
@@ -472,94 +528,89 @@ app.get('/api/buses', async (req, res) => {
           console.log(`[/api/buses] Found ${realVehicleTripIds.size} real vehicles for filtering`);
 
           virtualEntities = [];
-          const processedVirtualTrips = new Set();
+          const processedVirtualBlocks = new Set();
 
-          // Process ALL trips from the static schedule
-          const allStaticTripIds = Object.keys(schedule.stopTimesByTrip || {});
-          console.log(`[/api/buses] Checking ${allStaticTripIds.length} trips from static schedule`);
+          // Get all unique blocks from static schedule
+          const allBlocks = getBlockIdsFromTripIds(Object.keys(schedule.stopTimesByTrip || {}), schedule);
+          console.log(`[/api/buses] Checking ${allBlocks.length} blocks from static schedule`);
 
-          allStaticTripIds.forEach(tripId => {
+          allBlocks.forEach(blockId => {
             // Avoid duplicate processing
-            if (processedVirtualTrips.has(tripId)) return;
-            processedVirtualTrips.add(tripId);
+            if (processedVirtualBlocks.has(blockId)) return;
+            processedVirtualBlocks.add(blockId);
 
-            // Get static schedule for this trip
-            const staticStopTimes = getStaticScheduleForTrip(tripId, schedule);
-            if (!staticStopTimes || staticStopTimes.length === 0) {
-              return; // Can't create virtual without schedule
+            // Get trips in this block
+            const tripIdsInBlock = getTripIdsForBlock(blockId, schedule);
+            if (tripIdsInBlock.length === 0) {
+              return; // Can't create virtual without trips
             }
 
-            // NEW: Check if trip is scheduled today (based on calendar_dates)
-            if (!isTripScheduledToday(tripId, schedule)) {
-              console.log(`[/api/buses] Skipping ${tripId} - not scheduled today`);
+            // Check if ANY trip in this block is scheduled today
+            let hasScheduledTripToday = false;
+            for (const tripId of tripIdsInBlock) {
+              if (isTripScheduledToday(tripId, schedule)) {
+                hasScheduledTripToday = true;
+                break;
+              }
+            }
+
+            if (!hasScheduledTripToday) {
+              console.log(`[/api/buses] Skipping block ${blockId} - no trips scheduled today`);
               return;
             }
 
-            // Check if trip is active in static schedule (with midnight crossing support)
-            const isActiveInSchedule = isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
+            // Check if block is active (with 5-minute buffer)
+            const isActiveInSchedule = isBlockActive(blockId, schedule, currentScheduleSec, operatorId);
             if (!isActiveInSchedule) {
-              console.log(`[/api/buses] Skipping ${tripId} - not active in static schedule`);
+              console.log(`[/api/buses] Skipping block ${blockId} - not active in schedule`);
               return;
             }
 
-            // In normal mode: skip if real vehicle exists for this trip
+            // Check if real vehicle exists for any trip in this block
+            const hasRealVehicle = tripIdsInBlock.some(tripId => realVehicleTripIds.has(tripId));
+            
+            // In normal mode: skip if real vehicle exists for this block
             // In all_virtuals mode: show even if real vehicle exists
-            const hasRealVehicle = realVehicleTripIds.has(tripId);
             if (!allVirtuals && hasRealVehicle) {
-              console.log(`[/api/buses] Skipping ${tripId} - real vehicle exists (normal mode)`);
+              console.log(`[/api/buses] Skipping block ${blockId} - real vehicle exists (normal mode)`);
               return;
             }
 
-            // Calculate position using static schedule
-            const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
-            const position = calculateVirtualBusPosition(tripId, scheduleTimeSec, schedule, operatorId);            
+            // Calculate position using BLOCK-BASED approach
+            const position = calculateVirtualBusPositionForBlock(blockId, schedule, currentTimeSec, operatorId);
+            
             if (!position) {
-              console.log(`[/api/buses] Could not calculate position for ${tripId}`);
+              console.log(`[/api/buses] Could not calculate position for block ${blockId}`);
               return;
             }
 
-            const blockId = extractBlockIdFromTripId(tripId) || 'UNKNOWN';
-            const vehicleId = `VIRT-${blockId}-${tripId}`;
+            const vehicleId = `VIRT-${blockId}`;
             
             // Determine status based on progress
             let currentStatus = 2; // IN_TRANSIT_TO (default)
+            if (position.layover) currentStatus = 1; // STOPPED_AT during layover
             if (position.progress <= 0) currentStatus = 1; // STOPPED_AT
             if (position.progress >= 1) currentStatus = 0; // INCOMING_AT
             
-            // Try to get trip details from GTFS-RT if available, otherwise use static data
-            let routeId = 'UNKNOWN';
-            let startTime = '';
-            let startDate = '';
+            // Get trip details for display
+            let displayTripId = position.tripId || tripIdsInBlock[0];
+            let routeId = position.routeId || getRouteIdForBlock(blockId, schedule);
             let directionId = 0;
             
-            // Look for this trip in GTFS-RT feed
-            const rtTrip = tripResult.data?.entity?.find(e => 
-              e.tripUpdate?.trip?.tripId === tripId
-            );
-            
-            if (rtTrip && rtTrip.tripUpdate?.trip) {
-              routeId = rtTrip.tripUpdate.trip.routeId || 'UNKNOWN';
-              startTime = rtTrip.tripUpdate.trip.startTime || '';
-              startDate = rtTrip.tripUpdate.trip.startDate || '';
-              directionId = rtTrip.tripUpdate.trip.directionId || 0;
-            } else {
-              // Try to get from static schedule
-              const staticTrip = schedule.tripsMap?.[tripId];
-              if (staticTrip) {
-                routeId = staticTrip.route_id || 'UNKNOWN';
-                startTime = staticTrip.start_time || '';
-                startDate = staticTrip.start_date || '';
-                directionId = staticTrip.direction_id || 0;
-              }
+            // Try to get from static schedule
+            const staticTrip = schedule.tripsMap?.[displayTripId];
+            if (staticTrip) {
+              routeId = staticTrip.route_id || routeId;
+              directionId = staticTrip.direction_id || 0;
             }
 
             virtualEntities.push({
               id: vehicleId,
               vehicle: {
                 trip: {
-                  tripId: tripId,
-                  startTime: startTime,
-                  startDate: startDate,
+                  tripId: displayTripId,
+                  startTime: '', // Not needed for block-based
+                  startDate: '', // Not needed for block-based
                   routeId: routeId,
                   directionId: directionId,
                   blockId: blockId
@@ -573,7 +624,7 @@ app.get('/api/buses', async (req, res) => {
                 currentStopSequence: 1,
                 currentStatus: currentStatus,
                 timestamp: currentTimeSec,
-                stopId: position.segment?.start || staticStopTimes[0]?.stop_id,
+                stopId: position.segment?.start || position.segment?.end,
                 vehicle: {
                   id: vehicleId,
                   label: `Ghost ${getRouteDisplayName(routeId)}`,
@@ -581,15 +632,18 @@ app.get('/api/buses', async (req, res) => {
                 },
                 progress: position.progress?.toFixed(3) || '0.000',
                 metadata: {
-                  source: 'static_schedule',
+                  source: 'block_schedule',
                   all_virtuals_mode: allVirtuals,
                   has_real_vehicle: hasRealVehicle,
-                  crossed_midnight: position.crossedMidnight || false
+                  crossed_midnight: position.crossedMidnight || false,
+                  layover: position.layover || false,
+                  status: position.status || 'UNKNOWN',
+                  block_trips_count: tripIdsInBlock.length
                 }
               }
             });
             
-            console.log(`[/api/buses] Added virtual bus for ${tripId} (${routeId}) at ${position.latitude},${position.longitude}`);
+            console.log(`[/api/buses] Added virtual bus for block ${blockId} (${routeId}) at ${position.latitude},${position.longitude} (layover: ${position.layover})`);
           });
 
           // Cache the virtual buses
@@ -598,7 +652,7 @@ app.get('/api/buses', async (req, res) => {
             timestamp: Date.now()
           });
           
-          console.log(`[/api/buses] Generated ${virtualEntities.length} virtual buses from static schedule`);
+          console.log(`[/api/buses] Generated ${virtualEntities.length} virtual buses from ${processedVirtualBlocks.size} blocks`);
         }
       }
     }
@@ -822,8 +876,9 @@ app.get('/api/debug/virtuals-detail', async (req, res) => {
 
       if (info) {
         const { currentStop, nextStop, progress } = info;
-        position = calculateVirtualBusPosition(trip.tripId, currentTimeSec, schedule);
-        shapeUsed = true;  // Assume shape success if position calculated — adjust based on logs
+        const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
+        position = calculateVirtualBusPosition(trip.tripId, scheduleTimeSec, schedule);
+        shapeUsed = true;
       } else {
         fallbackReason = 'No stop info';
       }
