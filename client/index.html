@@ -189,10 +189,17 @@ const busMarkers = new Map();
 let blinkState = false;
 const BUS_WIDTH = 52;
 const BUS_HEIGHT = 80;
-const ANIMATION_DURATION = 15000;
-const BEARING_ANIMATION_DURATION = 2000;
+
+// ANIMATION DURATIONS - Easy to tweak!
+const REAL_BUS_ANIMATION_DURATION = 15000;    // 15 seconds for real buses
+const VIRTUAL_BUS_ANIMATION_DURATION = 5000;  // 5 seconds for virtual buses
+const BEARING_ANIMATION_DURATION = 2000;      // 2 seconds for bearing changes
+
 const MAXIMUM_POSITION_DIFFERENCE = 500;
 const routeColors = { '1': '#1a73e8', '3': '#f9a825', '5': '#34a853', default: '#666666' };
+
+// Virtual bus opacity (0.0 to 1.0)
+const VIRTUAL_BUS_OPACITY = 0.7;
 
 // Server endpoints with redundancy
 const PRIMARY_SERVER = 'https://bus-proxy-revelstoke.vercel.app/api/buses';
@@ -443,16 +450,19 @@ function updateBusCountDisplay(count) {
     }
 }
 
-// Create bus SVG functions (unchanged)
-function createBusSvg(route, bgColor, textColor, bearing = 0, hasAlert = false) {
+// Create bus SVG functions with opacity for virtual buses
+function createBusSvg(route, bgColor, textColor, bearing = 0, hasAlert = false, isVirtual = false) {
     const rotate = bearing !== 0 ? `transform="rotate(${bearing} 42 42)"` : '';
     const alertIcon = hasAlert ? `
         <circle cx="68" cy="16" r="10" fill="#ff4444" stroke="#fff" stroke-width="2"/>
         <text x="68" y="20" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold" font-family="Arial,sans-serif">!</text>
     ` : '';
     
+    // Apply opacity for virtual buses
+    const opacity = isVirtual ? VIRTUAL_BUS_OPACITY : 1;
+    
     return `<svg width="${BUS_WIDTH}" height="${BUS_HEIGHT}" viewBox="0 0 84 84" xmlns="http://www.w3.org/2000/svg">
-        <g ${rotate}>
+        <g ${rotate} opacity="${opacity}">
           <circle cx="16" cy="28" r="8" fill="#111"/>
           <circle cx="48" cy="28" r="8" fill="#111"/>
           <circle cx="16" cy="56" r="8" fill="#111"/>
@@ -470,17 +480,22 @@ function createBusSvg(route, bgColor, textColor, bearing = 0, hasAlert = false) 
       </svg>`;
 }
 
-function createSimpleCircleSvg(route, bgColor, textColor, hasAlert = false) {
+function createSimpleCircleSvg(route, bgColor, textColor, hasAlert = false, isVirtual = false) {
     const alertIcon = hasAlert ? `
         <circle cx="24" cy="6" r="6" fill="#ff4444" stroke="#fff" stroke-width="1"/>
         <text x="24" y="9" text-anchor="middle" fill="#fff" font-size="6" font-weight="bold" font-family="Arial,sans-serif">!</text>
     ` : '';
     
+    // Apply opacity for virtual buses
+    const opacity = isVirtual ? VIRTUAL_BUS_OPACITY : 1;
+    
     return `<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="15" cy="15" r="12" fill="${bgColor}" stroke="#fff" stroke-width="2"/>
-        <text x="15" y="20" text-anchor="middle" fill="${textColor}"
-              font-size="16" font-weight="bold" font-family="Arial,sans-serif">${route}</text>
-        ${alertIcon}
+        <g opacity="${opacity}">
+            <circle cx="15" cy="15" r="12" fill="${bgColor}" stroke="#fff" stroke-width="2"/>
+            <text x="15" y="20" text-anchor="middle" fill="${textColor}"
+                  font-size="16" font-weight="bold" font-family="Arial,sans-serif">${route}</text>
+            ${alertIcon}
+        </g>
     </svg>`;
 }
 
@@ -629,7 +644,7 @@ async function loadBusesIfNew() {
   }
 }
 
-// ——— Updated processBusData function with better state management ———
+// ——— Updated processBusData function ———
 function processBusData(data) {
     const seenIds = new Set();
     let gotNewBearingThisUpdate = false;
@@ -671,9 +686,16 @@ function processBusData(data) {
         seenIds.add(id);
         const lat = bus.position.latitude;
         const lng = bus.position.longitude;
+        const bearing = bus.position.bearing || 0;
         const routeNum = (bus.trip?.routeId || '').split('-')[0] || '?';
         const targetPos = { lat, lng };
         const hasAlert = item.alert && Object.keys(item.alert).length > 0;
+        
+        // Check if this is a virtual bus
+        const isVirtual = bus.vehicle?.is_virtual || id.startsWith('VIRT-') || 
+                         item.metadata?.source === 'block_schedule' || 
+                         item.metadata?.source === 'static_schedule' ||
+                         item.metadata?.source === 'first_stop_fallback';
         
         if (busMarkers.has(id)) {
             const entry = busMarkers.get(id);
@@ -686,14 +708,21 @@ function processBusData(data) {
                 entry.marker.setMap(null);
                 if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
                 busMarkers.delete(id);
-                createBusMarker(id, targetPos, routeNum, 0, hasAlert);
+                createBusMarker(id, targetPos, routeNum, bearing, hasAlert, isVirtual);
                 const newEntry = busMarkers.get(id);
                 newEntry.prevPos = targetPos;
                 newEntry.route = routeNum;
                 newEntry.hasAlert = hasAlert;
+                newEntry.isVirtual = isVirtual;
                 return;
             }
-            if (entry.prevPos) {
+            
+            // For virtual buses, use server bearing if available
+            if (isVirtual && bearing !== null && bearing !== undefined) {
+                entry.targetBearing = bearing;
+                gotNewBearingThisUpdate = true;
+            } else if (entry.prevPos) {
+                // For real buses, calculate bearing from position
                 const dist = google.maps.geometry.spherical.computeDistanceBetween(
                     new google.maps.LatLng(entry.prevPos),
                     new google.maps.LatLng(targetPos)
@@ -704,22 +733,32 @@ function processBusData(data) {
                     gotNewBearingThisUpdate = true;
                 }
             }
-            // Update alert status
-            if (entry.hasAlert !== hasAlert) {
+            
+            // Update alert status and virtual status
+            if (entry.hasAlert !== hasAlert || entry.isVirtual !== isVirtual) {
                 entry.hasAlert = hasAlert;
-                updateBusIcon(entry.marker, routeNum, entry.currentBearing || 0, hasAlert, entry.hasMovedOnce);
+                entry.isVirtual = isVirtual;
+                updateBusIcon(entry.marker, routeNum, entry.currentBearing || 0, hasAlert, entry.hasMovedOnce, isVirtual);
             }
             
             if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
-            startSmoothAnimation(entry, targetPos, entry.targetBearing || entry.currentBearing, routeNum, hasAlert);
+            startSmoothAnimation(entry, targetPos, entry.targetBearing || entry.currentBearing || bearing, routeNum, hasAlert, isVirtual);
             entry.prevPos = targetPos;
             entry.route = routeNum;
+            entry.hasAlert = hasAlert;
+            entry.isVirtual = isVirtual;
         } else {
-            createBusMarker(id, targetPos, routeNum, 0, hasAlert);
+            createBusMarker(id, targetPos, routeNum, bearing, hasAlert, isVirtual);
             const entry = busMarkers.get(id);
             entry.prevPos = targetPos;
             entry.route = routeNum;
             entry.hasAlert = hasAlert;
+            entry.isVirtual = isVirtual;
+            // Set initial bearing for virtual buses
+            if (isVirtual && bearing !== null && bearing !== undefined) {
+                entry.currentBearing = bearing;
+                entry.targetBearing = bearing;
+            }
         }
     });
     
@@ -776,7 +815,7 @@ function processBusData(data) {
     lastBusCount = currentCount;
 }
 
-// ——— FULLSCREEN LOGIC (unchanged) ———
+// ——— FULLSCREEN LOGIC ———
 function updateFullscreenButton() {
     const btn = document.getElementById('customFullscreenButton');
     if (!btn) return;
@@ -803,7 +842,7 @@ function toggleFullscreen() {
     }
 }
 
-// ——— BUS INFO WINDOW FUNCTIONS (unchanged) ———
+// ——— BUS INFO WINDOW FUNCTIONS ———
 function createBusInfoWindow(busData) {
     const vehicle = busData.vehicle;
     const vehicleId = vehicle?.vehicle?.id || vehicle?.id || 'N/A';
@@ -814,10 +853,11 @@ function createBusInfoWindow(busData) {
     const hasAlert = busData.alert && Object.keys(busData.alert).length > 0;
     const speed = vehicle?.position?.speed ? `${(vehicle.position.speed * 3.6).toFixed(1)} km/h` : 'N/A';
     const bearing = vehicle?.position?.bearing ? `${vehicle.position.bearing.toFixed(0)}°` : 'N/A';
+    const isVirtual = vehicle?.vehicle?.is_virtual || vehicleId.startsWith('VIRT-');
     
     let content = `<div style="font-family:Roboto,Arial,sans-serif; max-width:320px; padding:12px; color:#333;">
         <h3 style="margin:0 0 12px; font-size:18px; font-weight:600; color:#1a0dab;">
-            Bus ${lastFourId} - Route ${routeNum}
+            ${isVirtual ? '🚌 Virtual ' : ''}Bus ${lastFourId} - Route ${routeNum}
         </h3>`;
     
     if (hasAlert) {
@@ -832,21 +872,21 @@ function createBusInfoWindow(busData) {
         </div>`;
     }
     
-    // ── Block Title and explaination ──
-  const blockId = vehicle?.trip?.blockId;
-  if (blockId) {
-    const info = blockDescriptions[blockId] || blockDescriptions.unknown;
-    content += `
-      <div style="background:#e3f2fd; padding:12px; border-radius:8px; margin-bottom:12px; border-left:5px solid #1976d2;">
-        <div style="font-weight:bold; font-size:15px; color:#1565c0; margin-bottom:6px;">
-          Block: ${info.title}
-        </div>
-        <div style="font-size:13px; color:#424242;">
-          <strong>Block ID:</strong> ${blockId}<br>
-          ${info.description}
-        </div>
-      </div>`;
-  }
+    // ── Block Title and explanation ──
+    const blockId = vehicle?.trip?.blockId;
+    if (blockId) {
+        const info = blockDescriptions[blockId] || blockDescriptions.unknown;
+        content += `
+        <div style="background:#e3f2fd; padding:12px; border-radius:8px; margin-bottom:12px; border-left:5px solid #1976d2;">
+            <div style="font-weight:bold; font-size:15px; color:#1565c0; margin-bottom:6px;">
+                Block: ${info.title}
+            </div>
+            <div style="font-size:13px; color:#424242;">
+                <strong>Block ID:</strong> ${blockId}<br>
+                ${info.description}
+            </div>
+        </div>`;
+    }
     
     content += `
         <div style="margin-bottom:12px;">
@@ -893,6 +933,7 @@ function createBusInfoWindow(busData) {
             <div><strong>Position:</strong> ${lat}, ${lng}</div>
             <div><strong>Last Update:</strong> ${timestamp.toLocaleTimeString()}</div>
             <div><strong>Update Age:</strong> ${Math.round((Date.now() - timestamp.getTime()) / 1000)} seconds</div>
+            <div><strong>Type:</strong> ${isVirtual ? 'Virtual (Scheduled)' : 'Real-time'}</div>
         </div>`;
     }
     
@@ -909,7 +950,7 @@ function getStatusText(statusCode) {
     }
 }
 
-// ——— INITIALIZE MAP (unchanged except for initial state) ———
+// ——— INITIALIZE MAP ———
 function initMap() {
     const isFullscreen = window.location.pathname.includes('bus-tracker') && window === window.top;
     const revelstokeCenter = { lat: 50.9981, lng: -118.1956 };
@@ -941,7 +982,7 @@ function initMap() {
         }
     });
     
-    // Load KML layers (unchanged)
+    // Load KML layers
     Object.keys(kmlUrls).forEach(key => {
         const layer = new google.maps.KmlLayer({
             url: kmlUrls[key],
@@ -1007,7 +1048,7 @@ function initMap() {
         });
     });
     
-    // My Location Button (unchanged)
+    // My Location Button
     const locBtn = document.createElement('div');
     locBtn.className = 'my-location-button';
     locBtn.title = 'Go to your location';
@@ -1027,7 +1068,7 @@ function initMap() {
         }
     });
     
-    // User location marker (unchanged)
+    // User location marker
     if (navigator.geolocation) {
         navigator.geolocation.watchPosition(p => {
             const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
@@ -1043,7 +1084,7 @@ function initMap() {
         }, null, { enableHighAccuracy: true });
     }
     
-    // Legend Toggle (unchanged)
+    // Legend Toggle
     document.getElementById('legendHeader').addEventListener('click', function() {
         const body = document.getElementById('legendBody');
         const arrow = document.getElementById('legendArrow');
@@ -1056,7 +1097,7 @@ function initMap() {
         }
     });
     
-    // Individual Layer Toggles (unchanged)
+    // Individual Layer Toggles
     document.querySelectorAll('#legendBody input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', function() {
             const layerKey = this.getAttribute('data-layer');
@@ -1069,7 +1110,7 @@ function initMap() {
         });
     });
     
-    // Fullscreen button setup (unchanged)
+    // Fullscreen button setup
     const fsBtn = document.getElementById('customFullscreenButton');
     if (fsBtn) {
         fsBtn.addEventListener('click', toggleFullscreen);
@@ -1087,10 +1128,10 @@ function initMap() {
     setInterval(() => { blinkState = !blinkState; updateAllBusIcons(); }, 600);
 }
 
-// ——— Helper functions (unchanged from original) ———
-function createBusMarker(id, position, route, bearing = 0, hasAlert = false) {
+// ——— Helper functions ———
+function createBusMarker(id, position, route, bearing = 0, hasAlert = false, isVirtual = false) {
     const color = routeColors[route] || routeColors.default;
-    const svg = createSimpleCircleSvg(route, color, '#ffffff', hasAlert);
+    const svg = createSimpleCircleSvg(route, color, '#ffffff', hasAlert, isVirtual);
     
     const marker = new google.maps.Marker({
         position,
@@ -1124,30 +1165,43 @@ function createBusMarker(id, position, route, bearing = 0, hasAlert = false) {
     busMarkers.set(id, {
         marker,
         route,
-        currentBearing: 0,
+        currentBearing: isVirtual ? bearing : 0,
         prevPos: position,
         hasMovedOnce: false,
         hasAlert: hasAlert,
+        isVirtual: isVirtual,
         animFrame: null,
         startTime: null,
         startPos: null,
         targetPos: null,
         startBearing: null,
-        targetBearing: null
+        targetBearing: isVirtual ? bearing : null
     });
+    
+    // For virtual buses, immediately update to bus icon with correct bearing
+    if (isVirtual) {
+        const entry = busMarkers.get(id);
+        entry.hasMovedOnce = true;
+        updateBusIcon(marker, route, bearing, hasAlert, true, isVirtual);
+        marker.setZIndex(950);
+    }
 }
 
-function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) {
+function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert, isVirtual = false) {
     const marker = entry.marker;
     
-    if (!entry.hasMovedOnce && entry.prevPos) {
+    // Determine animation duration based on bus type
+    const ANIMATION_DURATION = isVirtual ? VIRTUAL_BUS_ANIMATION_DURATION : REAL_BUS_ANIMATION_DURATION;
+    
+    // Virtual buses always show as "moved" and use server bearing
+    if (!entry.hasMovedOnce && (entry.prevPos || isVirtual)) {
         const dist = google.maps.geometry.spherical.computeDistanceBetween(
-            new google.maps.LatLng(entry.prevPos),
+            new google.maps.LatLng(entry.prevPos || targetPos),
             new google.maps.LatLng(targetPos)
         );
-        if (dist > 8) {
+        if (dist > 8 || isVirtual) {
             entry.hasMovedOnce = true;
-            updateBusIcon(marker, route, targetBearing, hasAlert, true);
+            updateBusIcon(marker, route, targetBearing, hasAlert, true, isVirtual);
             marker.setZIndex(950);
         }
     }
@@ -1158,7 +1212,14 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) 
     entry.startPos = { lat: startPos.lat(), lng: startPos.lng() };
     entry.targetPos = targetPos;
     
-    if (Math.abs(getShortestAnglePath(entry.currentBearing || 0, targetBearing)) > 1) {
+    // For virtual buses, always use server bearing, don't animate bearing changes
+    if (isVirtual) {
+        entry.currentBearing = targetBearing;
+        entry.targetBearing = targetBearing;
+        entry.startBearing = targetBearing;
+        entry.bearingStartTime = null; // No bearing animation for virtual
+    } else if (Math.abs(getShortestAnglePath(entry.currentBearing || 0, targetBearing)) > 1) {
+        // Real buses get bearing animation
         if (!entry.bearingStartTime ||
             Math.abs(getShortestAnglePath(entry.targetBearing || 0, targetBearing)) > 1) {
             entry.bearingStartTime = performance.now();
@@ -1175,7 +1236,11 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) 
         const lng = entry.startPos.lng + (targetPos.lng - entry.startPos.lng) * pp;
         marker.setPosition({ lat, lng });
        
-        if (entry.hasMovedOnce && entry.bearingStartTime) {
+        // For virtual buses, use static server bearing
+        if (isVirtual) {
+            entry.currentBearing = targetBearing;
+        } else if (entry.hasMovedOnce && entry.bearingStartTime) {
+            // Real buses get bearing animation
             const eb = time - entry.bearingStartTime;
             const pb = Math.min(eb / BEARING_ANIMATION_DURATION, 1);
            
@@ -1193,7 +1258,7 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) 
             updateAllBusIcons();
         }
        
-        if (pp < 1 || (entry.hasMovedOnce && entry.bearingStartTime)) {
+        if (pp < 1 || (entry.hasMovedOnce && entry.bearingStartTime && !isVirtual)) {
             entry.animFrame = requestAnimationFrame(animate);
         }
     }
@@ -1201,14 +1266,15 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) 
     entry.animFrame = requestAnimationFrame(animate);
 }
 
-function updateBusIcon(marker, route, bearing, hasAlert, isBus = true) {
+function updateBusIcon(marker, route, bearing, hasAlert, isBus = true, isVirtual = false) {
     const color = routeColors[route] || routeColors.default;
     const bg = blinkState ? '#ffffff' : color;
     const text = blinkState ? color : '#ffffff';
     
     let svg;
-    if (isBus) {
-        svg = createBusSvg(route, bg, text, bearing, hasAlert);
+    // Show bus icon if it's a bus OR if it's virtual (virtual buses always show as buses)
+    if (isBus || isVirtual) {
+        svg = createBusSvg(route, bg, text, bearing, hasAlert, isVirtual);
         marker.setIcon({
             url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
             scaledSize: new google.maps.Size(BUS_WIDTH, BUS_HEIGHT),
@@ -1216,7 +1282,7 @@ function updateBusIcon(marker, route, bearing, hasAlert, isBus = true) {
             rotation: bearing
         });
     } else {
-        svg = createSimpleCircleSvg(route, bg, text, hasAlert);
+        svg = createSimpleCircleSvg(route, bg, text, hasAlert, isVirtual);
         marker.setIcon({
             url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
             scaledSize: new google.maps.Size(40, 40),
@@ -1227,13 +1293,13 @@ function updateBusIcon(marker, route, bearing, hasAlert, isBus = true) {
 
 function updateAllBusIcons() {
     busMarkers.forEach(entry => {
-        const { marker, route, currentBearing = 0, hasMovedOnce, hasAlert = false } = entry;
+        const { marker, route, currentBearing = 0, hasMovedOnce, hasAlert = false, isVirtual = false } = entry;
         const color = routeColors[route] || routeColors.default;
         const bg = blinkState ? '#ffffff' : color;
         const text = blinkState ? color : '#ffffff';
         
-        if (hasMovedOnce) {
-            const svg = createBusSvg(route, bg, text, currentBearing, hasAlert);
+        if (hasMovedOnce || isVirtual) {
+            const svg = createBusSvg(route, bg, text, currentBearing, hasAlert, isVirtual);
             marker.setIcon({
                 url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
                 scaledSize: new google.maps.Size(BUS_WIDTH, BUS_HEIGHT),
@@ -1241,7 +1307,7 @@ function updateAllBusIcons() {
                 rotation: currentBearing
             });
         } else {
-            const svg = createSimpleCircleSvg(route, bg, text, hasAlert);
+            const svg = createSimpleCircleSvg(route, bg, text, hasAlert, isVirtual);
             marker.setIcon({
                 url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
                 scaledSize: new google.maps.Size(40, 40),
@@ -1263,7 +1329,6 @@ document.addEventListener('DOMContentLoaded', function() {
     script.defer = true;
     document.head.appendChild(script);
 });
-
-  </script>
+</script>
 </body>
 </html>
