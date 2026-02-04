@@ -1,20 +1,1269 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bus Tracker Kelowna</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v9.2.4/ol.css">
-  <link rel="stylesheet" href="styles.css">
+  <title>Revelstoke Live Buses - Google Maps Satellite</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
+  <style>
+    body, html { margin:0; padding:0; height:100%; overflow:hidden; background:#000; }
+    #map { width:100%; height:100%; }
+     /* Loading Overlay - Enhanced */
+        .loading {
+            pointer-events: none;
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.85); color: white; font-family: Arial, sans-serif;
+            font-size: 18px; font-weight: 500; padding: 24px 36px; border-radius: 16px;
+            z-index: 1000; display: flex; align-items: center; gap: 16px; min-width: 260px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6); backdrop-filter: blur(6px);
+            opacity: 0; transition: opacity 0.5s ease;
+        }
+        .loading.show { opacity: 1; }
+        .spinner {
+            width: 28px; height: 28px; border: 3px solid #ffffff40;
+            border-top-color: #fff; border-radius: 50%; animation: spin 1s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Status Spinner in Legend */
+        #LegendSpinner {
+            width: 18px;
+            height: 18px;
+            border: 3px solid;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 8px;
+            flex-shrink: 0;
+        }
+        
+        /* Status Colors */
+        .spinner-status-red {
+            border-color: #ff444440 !important;
+            border-top-color: #ff4444 !important;
+        }
+        .spinner-status-yellow {
+            border-color: #ffbb3340 !important;
+            border-top-color: #ffbb33 !important;
+        }
+        .spinner-status-green {
+            border-color: #00C85140 !important;
+            border-top-color: #00C851 !important;
+        }
+        .spinner-status-blue {
+            border-color: #4285f440 !important;
+            border-top-color: #4285f4 !important;
+        }
+        
+        /* Loading Status Text */
+        #loadingStatus {
+            font-size: 12px;
+            font-weight: normal;
+            opacity: 0.8;
+            margin-top: 4px;
+        }
+
+    /* Custom Controls */
+    .gm-style .my-location-button {
+      background: rgba(0,0,0,0.6) !important; border: none !important; border-radius: 2px !important;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important; margin: 10px !important; padding: 8px !important;
+      cursor: pointer !important;
+    }
+    .my-location-button:hover svg, .custom-fullscreen-button:hover svg { transform: scale(1.3); transition: 0.2s; }
+    .my-location-button:active svg, .custom-fullscreen-button:active svg { transform: scale(1.0); }
+
+    .custom-fullscreen-button {
+      position: absolute; top: 94px; right: 2px; background: rgba(0,0,0,0.6);
+      border: none; border-radius: 2px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      margin: 10px; padding: 8px; cursor: pointer; z-index: 1000; display: none;
+    }
+    @media (max-width: 768px) {
+      .custom-fullscreen-button { display: block; }
+      .gm-fullscreen-control { display: none !important; }
+    }
+
+    /* Legend */
+    #legend {
+      position: absolute; bottom: 26px; left: 16px; background: white; border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3); font-family: 'Roboto', Arial, sans-serif;
+      z-index: 1000; max-width: 320px; overflow: hidden; transition: all 0.3s ease;
+    }
+    #legendHeader {
+      background: #1a73e8; color: white; padding: 0px 16px; cursor: pointer;
+      user-select: none; font-weight: 500; font-size: 18px; display: flex;
+      justify-content: space-between; align-items: center;
+    }
+    #legendHeader span { transition: transform 0.3s; }
+    #legendBody { color: black; padding: 0px 16px; background: white; }
+    #legendArrow { padding: 5px; font-weight: 900; font-size: 22px; }
+    .legend-item {
+      display: flex; align-items: center; margin: 10px 0; cursor: pointer; font-size: 14px;
+    }
+    .legend-item input { margin-right: 10px; transform: scale(1.2); cursor: pointer; }
+    .legend-color {
+      display: inline-block; width: 24px; height: 8px; margin-right: 10px;
+      border-radius: 2px; vertical-align: middle;
+    }
+    .stops-icon {
+  width: 18px;
+  height: 18px;
+  margin-right: 10px;
+  background: white;
+  border-radius: 50%;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  border: 2px solid #666;
+}
+  </style>
 </head>
 <body>
   <div id="map"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/ol@v9.2.4/dist/ol.js"></script>
-  <script src="main.js"></script>
-  <footer>
-    <p>Bus data provided by <a href="https://www.bctransit.com/" target="_blank">BC Transit</a> under an open GTFS license.
-</p>
-</footer>
+   <!-- Loading Overlay - Enhanced -->
+    <div class="loading" id="loading">
+        <div class="spinner" id="mainSpinner"></div>
+        <div class="loading-content">
+            <div id="loadingText">Initializing Map</div>
+            <div id="loadingStatus">Connecting to server...</div>
+        </div>
+    </div>
+
+  <!-- Fullscreen Button (Mobile) -->
+  <button id="customFullscreenButton" class="custom-fullscreen-button" title="Fullscreen">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+      <path fill="#fff" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+    </svg>
+  </button>
+
+  <!-- Collapsible Legend -->
+  <div id="legend">
+        <div id="legendHeader">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                Legend / Layers
+                <div id="LegendSpinner" class="spinner-status-red"></div>
+            </div>
+            <span id="legendArrow">⬇︎</span>
+        </div>
+    <div id="legendBody">
+      <label class="legend-item">
+  		<input type="checkbox" data-layer="stops" checked><span>
+<label class="legend-item">
+  <div class="stops-icon" style="border-color:#02579b; background:#02579b;"><!-- blue --></div>
+  Route 1 stops
+</label>
+<label class="legend-item">
+  <div class="stops-icon" style="border-color:#f8a824; background:#f8a824;"><!-- yellow --></div>
+  Route 3 stops
+</label>
+<label class="legend-item">
+  <div class="stops-icon" style="border-color:#0b6e37; background:#0b6e37;"><!-- green --></div>
+  Route 5 stops
+</label>
+<label class="legend-item">
+  <div class="stops-icon" style="border-color:#a52714; background:#a52714;"><!-- red --></div>
+  Stops for multiple routes
+</label></span>
+	</label>
+      <label class="legend-item">
+        <input type="checkbox" data-layer="route1" checked>
+        <div class="legend-color" style="background:#0088cf;"></div> Route 1 – Downtown ↔ Arrow Heights
+      </label>
+      <label class="legend-item">
+        <input type="checkbox" data-layer="route3" checked>
+        <div class="legend-color" style="background:#fed502;"></div> Route 3 – Downtown ↔ Big Eddy
+      </label>
+      <label class="legend-item">
+        <input type="checkbox" data-layer="route5to" checked>
+        <div class="legend-color" style="background:#0b7038;"></div> Route 5 – Hillcrest → RMR
+      </label>
+      <label class="legend-item">
+        <input type="checkbox" data-layer="route5from" checked>
+        <div class="legend-color" style="background:#7cb342;"></div> Route 5 – RMR → Hillcrest
+      </label>
+    </div>
+  </div>
+
+  <script>
+    const API_KEY = 'AIzaSyAtXYoRZgwc_5jm7yvPF0irX_1HrtqLgHQ';
+let map, userMarker;
+const busMarkers = new Map();
+let blinkState = false;
+const BUS_WIDTH = 52;
+const BUS_HEIGHT = 80;
+const ANIMATION_DURATION = 15000;
+const BEARING_ANIMATION_DURATION = 2000;
+const MAXIMUM_POSITION_DIFFERENCE = 500;
+const routeColors = { '1': '#1a73e8', '3': '#f9a825', '5': '#34a853', default: '#666666' };
+
+// Server endpoints with redundancy
+const PRIMARY_SERVER = 'https://bus-proxy-revelstoke.vercel.app/api/buses';
+const FALLBACK_SERVER = 'https://bus-tracker-revelstoke-production.up.railway.app/api/buses?';
+let currentServer = PRIMARY_SERVER;
+let serverSwitched = false;
+let serverRetryCount = 0;
+const MAX_RETRIES = 3;
+
+// KML Layers
+const kmlLayers = {};
+const kmlUrls = {
+  stops: 'https://www.google.com/maps/d/u/1/kml?mid=1ijYkTiD9ayBV3GV1DyAy_pY2X5VJuTY&nl=1&lid=oHh4knM33lk',
+  route1: 'https://www.google.com/maps/d/u/1/kml?mid=1ijYkTiD9ayBV3GV1DyAy_pY2X5VJuTY&nl=1&lid=_FDugBt3Seg',
+  route3: 'https://www.google.com/maps/d/u/1/kml?mid=1ijYkTiD9ayBV3GV1DyAy_pY2X5VJuTY&nl=1&lid=ZYQUoYRggtA',
+  route5to: 'https://www.google.com/maps/d/u/1/kml?mid=1ijYkTiD9ayBV3GV1DyAy_pY2X5VJuTY&nl=1&lid=YyADB_3eIgs',
+  route5from:'https://www.google.com/maps/d/u/1/kml?mid=1ijYkTiD9ayBV3GV1DyAy_pY2X5VJuTY&nl=1&lid=tJ4tIzbKs6c'
+};
+
+// Block Id Titles and descriptions
+const blockDescriptions = {
+// Key = blockId string from the feed
+  "11173598": {
+    title: "Route 1 and 3 Alternating",
+    description: "This bus alternates between ArrowHeights and The Big Eddy from Grizzly Plaza downtown. Stops include the hospital, senior center, thrift store, Begbie View, Ecole de Glacier, Arrow heights elementary and the Revelstoke High school. Route is available Monday to Saturday only."
+  },
+
+  "11655272": {
+    title: "Route 5 Bus 1 AM",
+    description: "This is the earliest bus to RMR, leaving the BestWestern Hotel at 05:20 for RMR, later going back and forth from the Hillcrest Hotel. All 2 way trips go down to Staff housing then stop by Guest Services."
+  },
+  
+  "11654894": {
+    title: "Route 5 Bus 1 PM",
+    description: "This bus mostly cycles continuously between the Hillcrest Hotel and Revelstoke Mountain Resort. Staff housing pick ups and drop offs are executed on every return lap. Last departure from RMR is at 22:00"
+  },
+
+  "11653669": {
+    title: "Route 5 Bus 2 Day Time",
+    description: "This bus mostly cycles continuously between the Hillcrest Hotel and Revelstoke Mountain Resort. Staff housing pick ups and drop offs are executed on every return lap."
+  },
+  
+  "11654246": {
+    title: "Route 5 Bus 2 Evening",
+    description: "This bus mostly cycles continuously between the Hillcrest Hotel and Revelstoke Mountain Resort. Staff housing pick ups and drop offs are executed on every return lap. Last departure from RMR is at 00:15"
+  },
+  
+  "11654434": {
+    title: "Route 5 Bus 2 Late Night",
+    description: "This bus cycles continuously between the Hillcrest Hotel and Revelstoke Mountain Resort in the late night on Wednesday, Friday and Saturday. Staff housing pick ups and drop offs are executed on every return lap. Last trip Downtown to RMR leaves at 01:50"
+  },
+
+  "11654377": {
+    title: "Route 5 Bus 3 AM",
+    description: "This bus does only Ramada → RMR, Deadhead back to Ramada. Staff housing drop offs on demand only."
+  },
+  
+  "11654759": {
+    title: "Route 5 Bus 3 PM",
+    description: "This bus does only RMR → Hillcrest, Deadhead back to RMR. Does not pick up at staff housing."
+  },
+  
+  "11655045": {
+    title: "Route 5 Bus 4 AM",
+    description: "This bus does only Ramada → RMR, Deadhead back to Ramada. Staff housing drop offs on demand only."
+  },
+  
+  "11655077": {
+    title: "Route 5 Bus 4 PM",
+    description: "This bus does only RMR → Hillcrest, Deadhead back to RMR. Does not pick up at staff housing."
+  },
+  
+  "11653752": {
+    title: "Route 5 Bus 5 AM",
+    description: "This bus does mostly Hillcrest → RMR, with one return at 11:30 from Guest Services. Staff housing drop offs are on demand only for one way trips."
+  },
+  
+  "11655005": {
+    title: "Route 5 Bus 5PM",
+    description: "This bus does return trips from RMR with one downtown to RMR and trip back between 18:39 and 19:10."
+  },
+  
+  unknown: {
+    title: "Unknown",
+    description: "This is the service block for today's run. It determines the pattern for the given route."
+  }
+};
+
+// Loading State Management
+const loadingEl = document.getElementById('loading');
+const loadingText = document.getElementById('loadingText');
+const loadingStatus = document.getElementById('loadingStatus');
+const legendSpinner = document.getElementById('LegendSpinner');
+const mainSpinner = document.getElementById('mainSpinner');
+
+// State tracking
+let haveFirstPosition = false;
+let haveBearing = false;
+let lastBusCount = 0;
+let noBusTimer = null;
+const NO_BUS_TIMEOUT = 5000;
+const SERVER_FAILURE_TIMEOUT = 10000;
+let serverFailureTimer = null;
+
+// Connection tracking
+let connectionState = 'connecting'; // 'connecting', 'primary-connected', 'fallback-connected', 'tracking', 'disconnected'
+let serverConnected = false;
+let firstBusPositionReceived = false;
+let secondBusPositionReceived = false;
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Occupancy status mapping
+const occupancyStatusMap = {
+  0: 'EMPTY',
+  1: 'MANY_SEATS_AVAILABLE',
+  2: 'FEW_SEATS_AVAILABLE',
+  3: 'STANDING_ROOM_ONLY',
+  4: 'CRUSHED_STANDING_ROOM_ONLY',
+  5: 'FULL',
+  6: 'NOT_ACCEPTING_PASSENGERS'
+};
+
+// Bus data cache for info windows
+const busDataCache = new Map();
+
+function setLoadingMessage(msg, status = '') {
+    loadingText.textContent = msg;
+    if (status) {
+        loadingStatus.textContent = status;
+        loadingStatus.style.display = 'block';
+    } else {
+        loadingStatus.style.display = 'none';
+    }
+}
+
+function updateLegendSpinnerColor() {
+    if (!legendSpinner) return;
+   
+    legendSpinner.classList.remove(
+        'spinner-status-red', 
+        'spinner-status-yellow', 
+        'spinner-status-green',
+        'spinner-status-blue'
+    );
+   
+    if (connectionState === 'connecting' || connectionState === 'disconnected') {
+        legendSpinner.classList.add('spinner-status-red');
+    } else if (connectionState === 'primary-connected' || connectionState === 'fallback-connected') {
+        legendSpinner.classList.add('spinner-status-yellow');
+    } else if (connectionState === 'tracking') {
+        legendSpinner.classList.add('spinner-status-green');
+    }
+    
+    // Update main spinner as well
+    if (mainSpinner) {
+        mainSpinner.classList.remove(
+            'spinner-status-red', 
+            'spinner-status-yellow', 
+            'spinner-status-green',
+            'spinner-status-blue'
+        );
+        if (connectionState === 'connecting' || connectionState === 'disconnected') {
+            mainSpinner.classList.add('spinner-status-red');
+        } else if (connectionState === 'primary-connected' || connectionState === 'fallback-connected') {
+            mainSpinner.classList.add('spinner-status-yellow');
+        } else if (connectionState === 'tracking') {
+            mainSpinner.classList.add('spinner-status-green');
+        }
+    }
+}
+
+function updateConnectionState(newState, serverType = '') {
+    const previousState = connectionState;
+    connectionState = newState;
+    
+    // Add server info to status if relevant
+    if (serverType && (newState === 'primary-connected' || newState === 'fallback-connected')) {
+        const serverName = serverType === 'primary' ? 'Primary' : 'Fallback';
+        setLoadingMessage(`Connected to ${serverName} Server`, 'Receiving bus positions...');
+    }
+    
+    updateLegendSpinnerColor();
+    
+    // Show appropriate messages for state transitions
+    switch(newState) {
+        case 'connecting':
+            setLoadingMessage('Connecting to server...', 'Trying primary server');
+            showLoading();
+            break;
+        case 'primary-connected':
+            if (previousState === 'connecting' || previousState === 'disconnected') {
+                showLoading();
+                setTimeout(() => hideLoading(), 2000);
+            }
+            break;
+        case 'fallback-connected':
+            if (previousState === 'primary-connected' || previousState === 'connecting') {
+                setLoadingMessage('Switched to Fallback Server', 'Primary server unavailable');
+                showLoading();
+                setTimeout(() => hideLoading(), 3000);
+            }
+            break;
+        case 'tracking':
+            // Only show message if we just started tracking
+            if (!firstBusPositionReceived || (previousState !== 'tracking' && busMarkers.size > 0)) {
+                const busCount = busMarkers.size;
+                const serverName = currentServer === PRIMARY_SERVER ? 'Primary' : 'Fallback';
+                setLoadingMessage(
+                    `Tracking ${busCount} ${busCount === 1 ? 'bus' : 'buses'}`, 
+                    `Connected to ${serverName} Server`
+                );
+                showLoading();
+                setTimeout(() => hideLoading(), 2500);
+            }
+            break;
+        case 'disconnected':
+            if (previousState !== 'disconnected') {
+                setLoadingMessage('Server Connection Lost', 'Attempting to reconnect...');
+                showLoading();
+                // Don't auto-hide in disconnected state
+            }
+            break;
+    }
+}
+
+function showLoading() {
+    loadingEl.classList.add('show');
+}
+function hideLoading() {
+    loadingEl.classList.remove('show');
+}
+
+function updateBusCountDisplay(count) {
+    clearTimeout(noBusTimer);
+    if (count === 0) {
+        noBusTimer = setTimeout(() => {
+            if (busMarkers.size === 0 && (connectionState === 'tracking' || connectionState === 'primary-connected' || connectionState === 'fallback-connected')) {
+                setLoadingMessage('No buses in service', 'Monitoring for active buses');
+                showLoading();
+                setTimeout(() => {
+                    if (busMarkers.size === 0) hideLoading();
+                }, 4000);
+            }
+        }, NO_BUS_TIMEOUT);
+    } else {
+        clearTimeout(noBusTimer);
+    }
+}
+
+// Create bus SVG functions (unchanged)
+function createBusSvg(route, bgColor, textColor, bearing = 0, hasAlert = false) {
+    const rotate = bearing !== 0 ? `transform="rotate(${bearing} 42 42)"` : '';
+    const alertIcon = hasAlert ? `
+        <circle cx="68" cy="16" r="10" fill="#ff4444" stroke="#fff" stroke-width="2"/>
+        <text x="68" y="20" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold" font-family="Arial,sans-serif">!</text>
+    ` : '';
+    
+    return `<svg width="${BUS_WIDTH}" height="${BUS_HEIGHT}" viewBox="0 0 84 84" xmlns="http://www.w3.org/2000/svg">
+        <g ${rotate}>
+          <circle cx="16" cy="28" r="8" fill="#111"/>
+          <circle cx="48" cy="28" r="8" fill="#111"/>
+          <circle cx="16" cy="56" r="8" fill="#111"/>
+          <circle cx="48" cy="56" r="8" fill="#111"/>
+          <circle cx="24" cy="16" r="5" fill="#ff2200"/>
+          <circle cx="40" cy="16" r="5" fill="#ff2200"/>
+          <rect x="16" y="14" width="32" height="58" rx="10" fill="${bgColor}"/>
+          <rect x="19" y="48" width="25" height="10" fill="#afeeee"/>
+          <circle cx="24" cy="70" r="7" fill="#ffff88"/>
+          <circle cx="40" cy="70" r="7" fill="#ffff88"/>
+          <text x="32" y="45" text-anchor="middle" fill="${textColor}"
+                font-size="28" font-weight="bold" font-family="Arial,sans-serif">${route}</text>
+          ${alertIcon}
+        </g>
+      </svg>`;
+}
+
+function createSimpleCircleSvg(route, bgColor, textColor, hasAlert = false) {
+    const alertIcon = hasAlert ? `
+        <circle cx="24" cy="6" r="6" fill="#ff4444" stroke="#fff" stroke-width="1"/>
+        <text x="24" y="9" text-anchor="middle" fill="#fff" font-size="6" font-weight="bold" font-family="Arial,sans-serif">!</text>
+    ` : '';
+    
+    return `<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="15" cy="15" r="12" fill="${bgColor}" stroke="#fff" stroke-width="2"/>
+        <text x="15" y="20" text-anchor="middle" fill="${textColor}"
+              font-size="16" font-weight="bold" font-family="Arial,sans-serif">${route}</text>
+        ${alertIcon}
+    </svg>`;
+}
+
+function calculateBearing(prevLat, prevLng, lat, lng) {
+    const toRad = d => d * Math.PI / 180;
+    const toDeg = r => r * 180 / Math.PI;
+    const φ1 = toRad(prevLat), φ2 = toRad(lat);
+    const Δλ = toRad(lng - prevLng);
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    let brng = toDeg(Math.atan2(y, x));
+    brng = (brng + 360) % 360;
+    return (brng + 180) % 360;
+}
+
+function normalizeAngle(a) { return ((a % 360) + 360) % 360; }
+function getShortestAnglePath(s, e) {
+    s = normalizeAngle(s); e = normalizeAngle(e);
+    let d = e - s;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    return d;
+}
+
+// ——— SERVER REDUNDANCY FUNCTIONS ———
+async function fetchWithFallback(forceFallback = false) {
+    let url = forceFallback ? FALLBACK_SERVER : currentServer;
+    const isPrimary = url === PRIMARY_SERVER;
+    
+    try {
+        const timestamp = Date.now();
+        const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${timestamp}`, {
+            signal: AbortSignal.timeout(8000) // 8 second timeout
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Reset failure counter on success
+        consecutiveFailures = 0;
+        
+        // Update server status
+        if (isPrimary) {
+            if (connectionState !== 'primary-connected' && connectionState !== 'tracking') {
+                updateConnectionState('primary-connected', 'primary');
+            }
+        } else {
+            if (connectionState !== 'fallback-connected' && connectionState !== 'tracking') {
+                updateConnectionState('fallback-connected', 'fallback');
+            }
+        }
+        
+        // If we're on fallback but primary might be back, try switching back
+        if (!isPrimary && serverRetryCount > 0 && consecutiveFailures === 0) {
+            serverRetryCount--;
+            if (serverRetryCount === 0) {
+                currentServer = PRIMARY_SERVER;
+                serverSwitched = false;
+                setLoadingMessage('Switching back to Primary Server', 'Testing connection...');
+                showLoading();
+                setTimeout(hideLoading, 2000);
+            }
+        }
+        
+        return { success: true, data };
+        
+    } catch (error) {
+        consecutiveFailures++;
+        
+        // If primary fails and we haven't switched to fallback yet
+        if (isPrimary && !forceFallback && !serverSwitched) {
+            console.warn('Primary server failed, trying fallback...');
+            serverSwitched = true;
+            serverRetryCount = MAX_RETRIES;
+            currentServer = FALLBACK_SERVER;
+            
+            // Try fallback immediately
+            return fetchWithFallback(true);
+        }
+        
+        // If we're already on fallback and it fails
+        if (!isPrimary || forceFallback) {
+            console.error('Fallback server also failed:', error);
+            
+            // If we have too many consecutive failures, go to disconnected state
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                updateConnectionState('disconnected');
+                handleCompleteServerFailure();
+            }
+            
+            return { success: false, error };
+        }
+        
+        return { success: false, error };
+    }
+}
+
+function handleCompleteServerFailure() {
+    clearTimeout(serverFailureTimer);
+    
+    serverFailureTimer = setTimeout(() => {
+        // Try to reconnect to primary
+        consecutiveFailures = 0;
+        currentServer = PRIMARY_SERVER;
+        serverSwitched = false;
+        updateConnectionState('connecting');
+        setLoadingMessage('Attempting to reconnect...', 'Trying primary server');
+        showLoading();
+    }, SERVER_FAILURE_TIMEOUT);
+}
+
+// ——— BUS DATA HANDLING ———
+let lastPositionsHash = '';
+async function loadBusesIfNew() {
+  try {
+    const result = await fetchWithFallback();
+    if (!result.success) return;
+
+    const data = result.data;
+    let vehicleEntities = [];
+
+    // Handle /api/buses format (real + optional virtuals)
+    if (data.data && data.data.vehicle_positions) {
+      vehicleEntities = data.data.vehicle_positions.entity || [];
+    }
+    // Handle /api/virtuals format (virtuals only — both normal and all_virtuals=true)
+    else if (data.data && data.data.virtual_positions) {
+      vehicleEntities = data.data.virtual_positions.entity || [];
+    }
+    // Fallback for any flat entity array
+    else if (data.entity) {
+      vehicleEntities = data.entity;
+    }
+
+    // If we got entities, process them
+    if (vehicleEntities.length > 0) {
+      processBusData({ entity: vehicleEntities });
+    } else {
+      console.log('No vehicle entities found in response');
+    }
+  } catch (err) {
+    console.error('loadBusesIfNew error:', err);
+  }
+}
+
+// ——— Updated processBusData function with better state management ———
+function processBusData(data) {
+    const seenIds = new Set();
+    let gotNewBearingThisUpdate = false;
+    let visibleBusCount = 0;
+    
+    // Cache bus data for info windows
+    data.entity.forEach(item => {
+        if (item.vehicle) {
+            busDataCache.set(item.id, item);
+        }
+    });
+    
+    // State transition logic
+    if (!firstBusPositionReceived && data.entity.some(e => e.vehicle?.position)) {
+        firstBusPositionReceived = true;
+        updateConnectionState('tracking');
+        
+        const initialBusCount = data.entity.filter(e => e.vehicle?.position).length;
+        const serverName = currentServer === PRIMARY_SERVER ? 'Primary' : 'Fallback';
+        setLoadingMessage(
+            `Found ${initialBusCount} ${initialBusCount === 1 ? 'bus' : 'buses'}`, 
+            `Connected to ${serverName} Server`
+        );
+        showLoading();
+        setTimeout(() => {
+            if (busMarkers.size > 0) hideLoading();
+        }, 2500);
+        
+    } else if (firstBusPositionReceived && !secondBusPositionReceived) {
+        secondBusPositionReceived = true;
+    }
+    
+    // Process each bus
+    data.entity.forEach(item => {
+        if (!item.vehicle?.position) return;
+        visibleBusCount++;
+        const bus = item.vehicle;
+        const id = item.id;
+        seenIds.add(id);
+        const lat = bus.position.latitude;
+        const lng = bus.position.longitude;
+        const routeNum = (bus.trip?.routeId || '').split('-')[0] || '?';
+        const targetPos = { lat, lng };
+        const hasAlert = item.alert && Object.keys(item.alert).length > 0;
+        
+        if (busMarkers.has(id)) {
+            const entry = busMarkers.get(id);
+            const currentPos = entry.marker.getPosition();
+            const distance = google.maps.geometry.spherical.computeDistanceBetween(
+                new google.maps.LatLng(currentPos.lat(), currentPos.lng()),
+                new google.maps.LatLng(lat, lng)
+            );
+            if (distance > MAXIMUM_POSITION_DIFFERENCE) {
+                entry.marker.setMap(null);
+                if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
+                busMarkers.delete(id);
+                createBusMarker(id, targetPos, routeNum, 0, hasAlert);
+                const newEntry = busMarkers.get(id);
+                newEntry.prevPos = targetPos;
+                newEntry.route = routeNum;
+                newEntry.hasAlert = hasAlert;
+                return;
+            }
+            if (entry.prevPos) {
+                const dist = google.maps.geometry.spherical.computeDistanceBetween(
+                    new google.maps.LatLng(entry.prevPos),
+                    new google.maps.LatLng(targetPos)
+                );
+                if (dist > 8) {
+                    const newBearing = calculateBearing(entry.prevPos.lat, entry.prevPos.lng, lat, lng);
+                    entry.targetBearing = newBearing;
+                    gotNewBearingThisUpdate = true;
+                }
+            }
+            // Update alert status
+            if (entry.hasAlert !== hasAlert) {
+                entry.hasAlert = hasAlert;
+                updateBusIcon(entry.marker, routeNum, entry.currentBearing || 0, hasAlert, entry.hasMovedOnce);
+            }
+            
+            if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
+            startSmoothAnimation(entry, targetPos, entry.targetBearing || entry.currentBearing, routeNum, hasAlert);
+            entry.prevPos = targetPos;
+            entry.route = routeNum;
+        } else {
+            createBusMarker(id, targetPos, routeNum, 0, hasAlert);
+            const entry = busMarkers.get(id);
+            entry.prevPos = targetPos;
+            entry.route = routeNum;
+            entry.hasAlert = hasAlert;
+        }
+    });
+    
+    // Remove buses that are no longer in the data
+    for (const [id, entry] of busMarkers) {
+        if (!seenIds.has(id)) {
+            entry.marker.setMap(null);
+            if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
+            busMarkers.delete(id);
+            busDataCache.delete(id);
+        }
+    }
+    
+    // Update bus count and handle state transitions
+    const currentCount = busMarkers.size;
+    updateBusCountDisplay(currentCount);
+    
+    // Handle bus count changes
+    if (currentCount === 0) {
+        if (!haveFirstPosition) {
+            setLoadingMessage('Waiting for buses...', 'Connected but no buses detected');
+            showLoading();
+        } else if (busMarkers.size === 0 && lastBusCount > 0 && connectionState === 'tracking') {
+            const serverName = currentServer === PRIMARY_SERVER ? 'Primary' : 'Fallback';
+            setLoadingMessage('All buses have left service', `Monitoring on ${serverName} Server`);
+            showLoading();
+            setTimeout(() => {
+                if (busMarkers.size === 0) hideLoading();
+            }, 8000);
+        }
+    } else {
+        clearTimeout(noBusTimer);
+        const justCameOnline = busMarkers.size > 0 && lastBusCount === 0;
+        
+        if (justCameOnline && connectionState !== 'tracking') {
+            updateConnectionState('tracking');
+            const serverName = currentServer === PRIMARY_SERVER ? 'Primary' : 'Fallback';
+            setLoadingMessage(`Found ${currentCount} ${currentCount === 1 ? 'bus' : 'buses'}!`, `Connected to ${serverName} Server`);
+            showLoading();
+            setTimeout(hideLoading, 3200);
+        } else if (currentCount !== lastBusCount && connectionState === 'tracking') {
+            const serverName = currentServer === PRIMARY_SERVER ? 'Primary' : 'Fallback';
+            setLoadingMessage(`${currentCount} ${currentCount === 1 ? 'bus' : 'buses'} active`, `Tracking on ${serverName} Server`);
+            showLoading();
+            setTimeout(hideLoading, 2200);
+        } else if (!haveBearing && gotNewBearingThisUpdate && connectionState === 'tracking') {
+            haveBearing = true;
+            setLoadingMessage('Direction tracking active', 'Buses moving with bearing');
+            showLoading();
+            setTimeout(hideLoading, 1800);
+        }
+    }
+    
+    lastBusCount = currentCount;
+}
+
+// ——— FULLSCREEN LOGIC (unchanged) ———
+function updateFullscreenButton() {
+    const btn = document.getElementById('customFullscreenButton');
+    if (!btn) return;
+    
+    const isFullscreenMode = window === window.top && window.location.pathname.includes('/bus-tracker');
+    btn.innerHTML = isFullscreenMode
+        ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+             <path fill="#fff" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>`
+        : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+             <path fill="#fff" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>`;
+    btn.title = isFullscreenMode ? 'Exit Fullscreen' : 'Enter Fullscreen';
+}
+
+function toggleFullscreen() {
+    const isFullscreenMode = window === window.top && window.location.pathname.includes('/bus-tracker');
+    if (isFullscreenMode) {
+        window.location.href = 'https://revyhub.com/travel#City-Bus';
+    } else {
+        if (window === window.top) {
+            window.location.href = 'https://revyhub.com/bus-tracker';
+        } else {
+            window.top.location.href = 'https://revyhub.com/bus-tracker';
+        }
+    }
+}
+
+// ——— BUS INFO WINDOW FUNCTIONS (unchanged) ———
+function createBusInfoWindow(busData) {
+    const vehicle = busData.vehicle;
+    const vehicleId = vehicle?.vehicle?.id || vehicle?.id || 'N/A';
+    const lastFourId = vehicleId.slice(-4);
+    const routeNum = (vehicle?.trip?.routeId || '').split('-')[0] || '?';
+    const occupancyStatus = occupancyStatusMap[vehicle?.occupancyStatus] || 'UNKNOWN';
+    const occupancyPercent = vehicle?.occupancyPercentage !== undefined ? `${vehicle.occupancyPercentage}%` : 'N/A';
+    const hasAlert = busData.alert && Object.keys(busData.alert).length > 0;
+    const speed = vehicle?.position?.speed ? `${(vehicle.position.speed * 3.6).toFixed(1)} km/h` : 'N/A';
+    const bearing = vehicle?.position?.bearing ? `${vehicle.position.bearing.toFixed(0)}°` : 'N/A';
+    
+    let content = `<div style="font-family:Roboto,Arial,sans-serif; max-width:320px; padding:12px; color:#333;">
+        <h3 style="margin:0 0 12px; font-size:18px; font-weight:600; color:#1a0dab;">
+            Bus ${lastFourId} - Route ${routeNum}
+        </h3>`;
+    
+    if (hasAlert) {
+        content += `
+        <div style="background:#fff3cd; border-left:4px solid #ffc107; padding:8px 12px; margin-bottom:12px; border-radius:4px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                <span style="color:#856404; font-weight:bold;">⚠️ ALERT</span>
+            </div>
+            <div style="color:#856404; font-size:14px;">
+                ${busData.alert.description || 'Service alert active'}
+            </div>
+        </div>`;
+    }
+    
+    // ── Block Title and explaination ──
+  const blockId = vehicle?.trip?.blockId;
+  if (blockId) {
+    const info = blockDescriptions[blockId] || blockDescriptions.unknown;
+    content += `
+      <div style="background:#e3f2fd; padding:12px; border-radius:8px; margin-bottom:12px; border-left:5px solid #1976d2;">
+        <div style="font-weight:bold; font-size:15px; color:#1565c0; margin-bottom:6px;">
+          Block: ${info.title}
+        </div>
+        <div style="font-size:13px; color:#424242;">
+          <strong>Block ID:</strong> ${blockId}<br>
+          ${info.description}
+        </div>
+      </div>`;
+  }
+    
+    content += `
+        <div style="margin-bottom:12px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:14px;">
+                <div><strong>Occupancy:</strong> ${occupancyStatus}</div>
+                <div><strong>Fill Level:</strong> ${occupancyPercent}</div>
+                <div><strong>Speed:</strong> ${speed}</div>
+                <div><strong>Bearing:</strong> ${bearing}</div>
+            </div>
+        </div>`;
+    
+    if (vehicle?.currentStatus !== undefined) {
+        const statusText = getStatusText(vehicle.currentStatus);
+        const stopId = vehicle?.stopId || 'N/A';
+        content += `
+        <div style="background:#f8f9fa; padding:8px 12px; border-radius:4px; margin-bottom:12px;">
+            <div style="font-weight:bold; margin-bottom:4px; color:#495057;">Current Status</div>
+            <div style="font-size:13px; color:#6c757d;">
+                <div><strong>Status:</strong> ${statusText}</div>
+                <div><strong>Stop Sequence:</strong> ${vehicle.currentStopSequence || 'N/A'}</div>
+                <div><strong>Stop ID:</strong> ${stopId}</div>
+            </div>
+        </div>`;
+    }
+    
+    if (vehicle?.trip) {
+        content += `
+        <div style="background:#e8f4fd; padding:8px 12px; border-radius:4px; margin-bottom:12px;">
+            <div style="font-weight:bold; margin-bottom:4px; color:#0c5460;">Trip Information</div>
+            <div style="font-size:13px; color:#0c5460;">
+                <div><strong>Start:</strong> ${vehicle.trip.startDate} ${vehicle.trip.startTime}</div>
+                <div><strong>Route:</strong> ${vehicle.trip.routeId || 'N/A'}</div>
+                <div><strong>Direction:</strong> ${vehicle.trip.directionId === 0 ? 'Outbound' : 'Inbound'}</div>
+            </div>
+        </div>`;
+    }
+    
+    if (vehicle?.position) {
+        const lat = vehicle.position.latitude.toFixed(6);
+        const lng = vehicle.position.longitude.toFixed(6);
+        const timestamp = vehicle.timestamp ? new Date(vehicle.timestamp * 1000) : new Date();
+        content += `
+        <div style="font-size:12px; color:#6c757d; border-top:1px solid #dee2e6; padding-top:8px;">
+            <div><strong>Position:</strong> ${lat}, ${lng}</div>
+            <div><strong>Last Update:</strong> ${timestamp.toLocaleTimeString()}</div>
+            <div><strong>Update Age:</strong> ${Math.round((Date.now() - timestamp.getTime()) / 1000)} seconds</div>
+        </div>`;
+    }
+    
+    content += `</div>`;
+    return content;
+}
+
+function getStatusText(statusCode) {
+    switch(statusCode) {
+        case 0: return 'Incoming';
+        case 1: return 'Stopped';
+        case 2: return 'In Transit';
+        default: return 'Unknown';
+    }
+}
+
+// ——— INITIALIZE MAP (unchanged except for initial state) ———
+function initMap() {
+    const isFullscreen = window.location.pathname.includes('bus-tracker') && window === window.top;
+    const revelstokeCenter = { lat: 50.9981, lng: -118.1956 };
+    const revelstokeLatLng = new google.maps.LatLng(revelstokeCenter.lat, revelstokeCenter.lng);
+    
+    map = new google.maps.Map(document.getElementById('map'), {
+        center: revelstokeCenter,
+        zoom: 14,
+        minZoom: 12,
+        maxZoom: 19,
+        mapTypeId: 'satellite',
+        panControl: false,
+        rotateControl: false,
+        tilt: 0,
+        mapTypeControl: true,
+        mapTypeControlOptions: { position: google.maps.ControlPosition.TOP_RIGHT },
+        streetViewControl: true,
+        streetViewControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+        zoomControl: false,
+    });
+    
+    // Auto-recenter if center is more than 100km away
+    map.addListener('center_changed', () => {
+        const currentCenter = map.getCenter();
+        const distance = google.maps.geometry.spherical.computeDistanceBetween(revelstokeLatLng, currentCenter) / 1000;
+        if (distance > 10) {
+            map.panTo(revelstokeCenter);
+            map.setZoom(14);
+        }
+    });
+    
+    // Load KML layers (unchanged)
+    Object.keys(kmlUrls).forEach(key => {
+        const layer = new google.maps.KmlLayer({
+            url: kmlUrls[key],
+            map: map,
+            suppressInfoWindows: true,
+            preserveViewport: true,
+            clickable: true
+        });
+        kmlLayers[key] = layer;
+        layer.addListener('click', e => {
+            const fd = e.featureData;
+            if (!fd) return;
+            let contentParts = [];
+            if (fd.name && fd.name.trim()) {
+                const cleanName = fd.name.replace(/<[^>]*>/g, '').trim();
+                if (cleanName) {
+                    contentParts.push(`<h3 style="margin:0 0 12px; font-size:18px; font-weight:600; color:#1a0dab;">${cleanName}</h3>`);
+                }
+            }
+            if (fd.description && fd.description.trim()) {
+                let desc = fd.description.trim();
+                desc = desc.replace(/<br\s*\/?>/gi, '\n')
+                           .replace(/<[^>]*>/g, '');
+                const lines = desc.split('\n');
+                const irrelevantPrefixes = [
+                    'stop_code',
+                    'stop_lat',
+                    'stop_lon',
+                    'geometry',
+                    'unnamed',
+                    'stop_id'
+                ];
+                lines.forEach(rawLine => {
+                    const trimmedLine = rawLine.trim();
+                    if (!trimmedLine) return;
+                    const colonIndex = trimmedLine.indexOf(':');
+                    if (colonIndex === -1) return;
+                    const keyRaw = trimmedLine.substring(0, colonIndex).trim();
+                    const keyLower = keyRaw.toLowerCase();
+                    const value = trimmedLine.substring(colonIndex + 1).trim();
+                    const isIrrelevant = irrelevantPrefixes.some(prefix =>
+                        keyLower.startsWith(prefix.toLowerCase())
+                    );
+                    if (isIrrelevant) return;
+                    if (!value) return;
+                    const niceKey = keyRaw
+                        .split(' ')
+                        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                        .join(' ');
+                    contentParts.push(`<div style="margin:8px 0; font-size:15px; color:#333"><strong>${niceKey}:</strong> ${value}</div>`);
+                });
+            }
+            if (contentParts.length === 0) return;
+            const content = `<div style="font-family:Roboto,Arial,sans-serif; max-width:320px; padding:8px 0;">${contentParts.join('')}</div>`;
+            const iw = new google.maps.InfoWindow({
+                content,
+                maxWidth: 350
+            });
+            if (window.currentInfoWindow) window.currentInfoWindow.close();
+            iw.setPosition(e.latLng);
+            iw.open(map);
+            window.currentInfoWindow = iw;
+        });
+    });
+    
+    // My Location Button (unchanged)
+    const locBtn = document.createElement('div');
+    locBtn.className = 'my-location-button';
+    locBtn.title = 'Go to your location';
+    locBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+        <path fill="#fff" d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/>
+    </svg>`;
+    map.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(locBtn);
+    locBtn.addEventListener('click', () => {
+        if (userMarker) {
+            map.panTo(userMarker.getPosition());
+            map.setZoom(15);
+        } else {
+            navigator.geolocation.getCurrentPosition(p => {
+                map.panTo({ lat: p.coords.latitude, lng: p.coords.longitude });
+                map.setZoom(15);
+            }, () => alert('Location access denied'));
+        }
+    });
+    
+    // User location marker (unchanged)
+    if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(p => {
+            const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+            if (!userMarker) {
+                userMarker = new google.maps.Marker({
+                    position: pos, map, title: 'You are here',
+                    icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#4285F4', fillOpacity: 1, strokeWeight: 4, strokeColor: '#fff' },
+                    zIndex: 1000
+                });
+            } else {
+                userMarker.setPosition(pos);
+            }
+        }, null, { enableHighAccuracy: true });
+    }
+    
+    // Legend Toggle (unchanged)
+    document.getElementById('legendHeader').addEventListener('click', function() {
+        const body = document.getElementById('legendBody');
+        const arrow = document.getElementById('legendArrow');
+        if (body.style.display === 'none') {
+            body.style.display = 'block';
+            arrow.textContent = '⬇︎';
+        } else {
+            body.style.display = 'none';
+            arrow.textContent = '⬆︎';
+        }
+    });
+    
+    // Individual Layer Toggles (unchanged)
+    document.querySelectorAll('#legendBody input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', function() {
+            const layerKey = this.getAttribute('data-layer');
+            const layer = kmlLayers[layerKey];
+            if (this.checked) {
+                layer.setMap(map);
+            } else {
+                layer.setMap(null);
+            }
+        });
+    });
+    
+    // Fullscreen button setup (unchanged)
+    const fsBtn = document.getElementById('customFullscreenButton');
+    if (fsBtn) {
+        fsBtn.addEventListener('click', toggleFullscreen);
+        updateFullscreenButton();
+    }
+    window.addEventListener('hashchange', updateFullscreenButton);
+    if (window !== window.top) {
+        setInterval(updateFullscreenButton, 1000);
+    }
+    
+    // Start bus polling with redundancy
+    updateConnectionState('connecting');
+    loadBusesIfNew();
+    setInterval(loadBusesIfNew, 1000);
+    setInterval(() => { blinkState = !blinkState; updateAllBusIcons(); }, 600);
+}
+
+// ——— Helper functions (unchanged from original) ———
+function createBusMarker(id, position, route, bearing = 0, hasAlert = false) {
+    const color = routeColors[route] || routeColors.default;
+    const svg = createSimpleCircleSvg(route, color, '#ffffff', hasAlert);
+    
+    const marker = new google.maps.Marker({
+        position,
+        map,
+        icon: {
+            url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+            scaledSize: new google.maps.Size(40, 40),
+            anchor: new google.maps.Point(20, 20)
+        },
+        zIndex: 900
+    });
+    
+    marker.addListener('click', () => {
+        const busData = busDataCache.get(id);
+        if (!busData) {
+            console.log('No bus data found for id:', id);
+            return;
+        }
+        
+        const content = createBusInfoWindow(busData);
+        const iw = new google.maps.InfoWindow({
+            content,
+            maxWidth: 350
+        });
+        
+        if (window.currentInfoWindow) window.currentInfoWindow.close();
+        iw.open(map, marker);
+        window.currentInfoWindow = iw;
+    });
+    
+    busMarkers.set(id, {
+        marker,
+        route,
+        currentBearing: 0,
+        prevPos: position,
+        hasMovedOnce: false,
+        hasAlert: hasAlert,
+        animFrame: null,
+        startTime: null,
+        startPos: null,
+        targetPos: null,
+        startBearing: null,
+        targetBearing: null
+    });
+}
+
+function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert) {
+    const marker = entry.marker;
+    
+    if (!entry.hasMovedOnce && entry.prevPos) {
+        const dist = google.maps.geometry.spherical.computeDistanceBetween(
+            new google.maps.LatLng(entry.prevPos),
+            new google.maps.LatLng(targetPos)
+        );
+        if (dist > 8) {
+            entry.hasMovedOnce = true;
+            updateBusIcon(marker, route, targetBearing, hasAlert, true);
+            marker.setZIndex(950);
+        }
+    }
+    
+    const startPos = marker.getPosition();
+    entry.route = route;
+    entry.startTime = performance.now();
+    entry.startPos = { lat: startPos.lat(), lng: startPos.lng() };
+    entry.targetPos = targetPos;
+    
+    if (Math.abs(getShortestAnglePath(entry.currentBearing || 0, targetBearing)) > 1) {
+        if (!entry.bearingStartTime ||
+            Math.abs(getShortestAnglePath(entry.targetBearing || 0, targetBearing)) > 1) {
+            entry.bearingStartTime = performance.now();
+            entry.startBearing = entry.currentBearing || 0;
+            entry.targetBearing = targetBearing;
+        }
+    }
+    
+    function animate(time) {
+        const ep = time - entry.startTime;
+        const pp = Math.min(ep / ANIMATION_DURATION, 1);
+       
+        const lat = entry.startPos.lat + (targetPos.lat - entry.startPos.lat) * pp;
+        const lng = entry.startPos.lng + (targetPos.lng - entry.startPos.lng) * pp;
+        marker.setPosition({ lat, lng });
+       
+        if (entry.hasMovedOnce && entry.bearingStartTime) {
+            const eb = time - entry.bearingStartTime;
+            const pb = Math.min(eb / BEARING_ANIMATION_DURATION, 1);
+           
+            let currentBearing;
+            if (pb < 1) {
+                const delta = getShortestAnglePath(entry.startBearing, entry.targetBearing);
+                currentBearing = normalizeAngle(entry.startBearing + delta * pb);
+            } else {
+                currentBearing = entry.targetBearing;
+                entry.bearingStartTime = null;
+                entry.startBearing = null;
+            }
+           
+            entry.currentBearing = currentBearing;
+            updateAllBusIcons();
+        }
+       
+        if (pp < 1 || (entry.hasMovedOnce && entry.bearingStartTime)) {
+            entry.animFrame = requestAnimationFrame(animate);
+        }
+    }
+    
+    entry.animFrame = requestAnimationFrame(animate);
+}
+
+function updateBusIcon(marker, route, bearing, hasAlert, isBus = true) {
+    const color = routeColors[route] || routeColors.default;
+    const bg = blinkState ? '#ffffff' : color;
+    const text = blinkState ? color : '#ffffff';
+    
+    let svg;
+    if (isBus) {
+        svg = createBusSvg(route, bg, text, bearing, hasAlert);
+        marker.setIcon({
+            url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+            scaledSize: new google.maps.Size(BUS_WIDTH, BUS_HEIGHT),
+            anchor: new google.maps.Point(BUS_WIDTH/2, BUS_HEIGHT/2 + 6),
+            rotation: bearing
+        });
+    } else {
+        svg = createSimpleCircleSvg(route, bg, text, hasAlert);
+        marker.setIcon({
+            url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+            scaledSize: new google.maps.Size(40, 40),
+            anchor: new google.maps.Point(20, 20)
+        });
+    }
+}
+
+function updateAllBusIcons() {
+    busMarkers.forEach(entry => {
+        const { marker, route, currentBearing = 0, hasMovedOnce, hasAlert = false } = entry;
+        const color = routeColors[route] || routeColors.default;
+        const bg = blinkState ? '#ffffff' : color;
+        const text = blinkState ? color : '#ffffff';
+        
+        if (hasMovedOnce) {
+            const svg = createBusSvg(route, bg, text, currentBearing, hasAlert);
+            marker.setIcon({
+                url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+                scaledSize: new google.maps.Size(BUS_WIDTH, BUS_HEIGHT),
+                anchor: new google.maps.Point(BUS_WIDTH/2, BUS_HEIGHT/2 + 6),
+                rotation: currentBearing
+            });
+        } else {
+            const svg = createSimpleCircleSvg(route, bg, text, hasAlert);
+            marker.setIcon({
+                url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+                scaledSize: new google.maps.Size(40, 40),
+                anchor: new google.maps.Point(20, 20)
+            });
+        }
+    });
+}
+
+// Make initMap available globally for Google Maps API callback
+window.initMap = initMap;
+
+// Wait for DOM to be ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Load Google Maps API
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${API_KEY}&libraries=geometry&callback=initMap`;
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+});
+
+  </script>
 </body>
 </html>
