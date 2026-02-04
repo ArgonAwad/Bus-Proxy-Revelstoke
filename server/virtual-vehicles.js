@@ -174,7 +174,7 @@ function findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec,
 }
 
 // 8. Calculate exact position along shape using distance-based interpolation
-function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, operatorId = '36') {
+function calculateExactPositionAlongShape(tripId, scheduleData, currentScheduleSec, operatorId = '36') {
   // 1. Get static schedule for this trip
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
   if (!staticStopTimes) {
@@ -196,10 +196,7 @@ function calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, 
     return null;
   }
   
-  // 4. Convert current time to schedule time (WITH TIMEZONE)
-  const currentScheduleSec = getScheduleTimeInSeconds(operatorId);
-  
-  // 5. Find current segment in schedule (with midnight crossing support)
+  // 4. Find current segment in schedule (with midnight crossing support)
   const segment = findCurrentSegmentInStaticSchedule(staticStopTimes, currentScheduleSec, operatorId);
   if (!segment) {
     console.log(`[calculateExactPosition] Not between scheduled stops for ${tripId} at ${currentScheduleSec}s (${formatTime(currentScheduleSec)})`);
@@ -336,8 +333,12 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
     return null;
   }
   
-  // Use REAL server time, not feed time
-  const position = calculateExactPositionAlongShape(tripId, scheduleData, currentTimeSec, operatorId);
+  // CRITICAL FIX: Use the passed currentTimeSec as schedule time
+  // This ensures position is calculated with the same time that gets cached
+  const scheduleTimeSec = currentTimeSec;
+  
+  // Calculate position with the consistent schedule time
+  const position = calculateExactPositionAlongShape(tripId, scheduleData, scheduleTimeSec, operatorId);
   
   if (!position) {
     // No fallback - better to return null than wrong position
@@ -355,7 +356,9 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
       start: position.segmentStart,
       end: position.segmentEnd
     },
-    crossedMidnight: position.crossedMidnight
+    crossedMidnight: position.crossedMidnight,
+    // Store the exact schedule time used for this calculation
+    scheduleTimeUsed: scheduleTimeSec
   };
 }
 
@@ -457,6 +460,32 @@ function isTripActiveAndScheduled(tripId, scheduleData, currentScheduleSec, oper
   return isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
 }
 
+// NEW: Calculate schedule time from a Unix timestamp
+function getScheduleTimeFromUnix(unixTimestamp, operatorId = '36') {
+  const date = new Date(unixTimestamp * 1000);
+  
+  let timeZone;
+  switch(operatorId) {
+    case '36': // Revelstoke
+      timeZone = 'America/Los_Angeles'; // Pacific Time
+      break;
+    case '47': // Kelowna
+    case '48': // Victoria
+      timeZone = 'America/Vancouver'; // Pacific Time
+      break;
+    default:
+      timeZone = 'America/Los_Angeles'; // Default to Pacific
+  }
+  
+  const localTime = new Date(date.toLocaleString('en-US', { timeZone }));
+  
+  const hours = localTime.getHours();
+  const minutes = localTime.getMinutes();
+  const seconds = localTime.getSeconds();
+  
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
 // Helper function to format seconds as HH:MM:SS
 function formatTime(seconds) {
   const hrs = Math.floor(seconds / 3600);
@@ -478,5 +507,6 @@ export {
   isTripActiveInStaticSchedule,
   getStaticScheduleForTrip,
   isTripScheduledToday,           // NEW
-  isTripActiveAndScheduled        // NEW
+  isTripActiveAndScheduled,       // NEW
+  getScheduleTimeFromUnix         // NEW: For converting cached timestamps
 };
