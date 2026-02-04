@@ -199,7 +199,7 @@ const MAXIMUM_POSITION_DIFFERENCE = 500;
 const routeColors = { '1': '#1a73e8', '3': '#f9a825', '5': '#34a853', default: '#666666' };
 
 // Virtual bus opacity (0.0 to 1.0)
-const VIRTUAL_BUS_OPACITY = 0.7;
+const VIRTUAL_BUS_OPACITY = 0.5;
 
 // Server endpoints with redundancy
 const PRIMARY_SERVER = 'https://bus-proxy-revelstoke.vercel.app/api/buses';
@@ -508,7 +508,7 @@ function calculateBearing(prevLat, prevLng, lat, lng) {
     const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
     let brng = toDeg(Math.atan2(y, x));
     brng = (brng + 360) % 360;
-    return (brng + 180) % 360;
+    return (brng+180) % 360;
 }
 
 function normalizeAngle(a) { return ((a % 360) + 360) % 360; }
