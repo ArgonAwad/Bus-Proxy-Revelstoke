@@ -273,8 +273,8 @@ app.get('/api/virtuals', async (req, res) => {
       }
 
       // Calculate position using static schedule
-      let position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule, operatorId);
-      
+      const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
+      let position = calculateVirtualBusPosition(tripId, scheduleTimeSec, schedule, operatorId);      
       if (!position) {
         console.log(`[VIRTUALS] Could not calculate position for ${tripId}`);
         
@@ -510,8 +510,8 @@ app.get('/api/buses', async (req, res) => {
             }
 
             // Calculate position using static schedule
-            const position = calculateVirtualBusPosition(tripId, currentTimeSec, schedule, operatorId);
-            
+            const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
+            const position = calculateVirtualBusPosition(tripId, scheduleTimeSec, schedule, operatorId);            
             if (!position) {
               console.log(`[/api/buses] Could not calculate position for ${tripId}`);
               return;
