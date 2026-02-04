@@ -698,67 +698,62 @@ function processBusData(data) {
                          item.metadata?.source === 'first_stop_fallback';
         
         if (busMarkers.has(id)) {
-            const entry = busMarkers.get(id);
-            const currentPos = entry.marker.getPosition();
-            const distance = google.maps.geometry.spherical.computeDistanceBetween(
-                new google.maps.LatLng(currentPos.lat(), currentPos.lng()),
-                new google.maps.LatLng(lat, lng)
+    const entry = busMarkers.get(id);
+    const currentPos = entry.marker.getPosition();
+    const distance = google.maps.geometry.spherical.computeDistanceBetween(
+        new google.maps.LatLng(currentPos.lat(), currentPos.lng()),
+        new google.maps.LatLng(lat, lng)
+    );
+    if (distance > MAXIMUM_POSITION_DIFFERENCE) {
+        entry.marker.setMap(null);
+        if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
+        busMarkers.delete(id);
+        createBusMarker(id, targetPos, routeNum, bearing, hasAlert, isVirtual);
+        const newEntry = busMarkers.get(id);
+        newEntry.prevPos = targetPos;
+        newEntry.route = routeNum;
+        newEntry.hasAlert = hasAlert;
+        newEntry.isVirtual = isVirtual;
+        return;
+    }
+
+    // ─── NEW UNIFIED BEARING CALCULATION (same for real + virtual) ───
+    if (entry.prevPos) {
+        const dist = google.maps.geometry.spherical.computeDistanceBetween(
+            new google.maps.LatLng(entry.prevPos),
+            new google.maps.LatLng(targetPos)
+        );
+        if (dist > 10) {  // ← you can tune this (8–15 m is good)
+            const newBearing = calculateBearing(
+                entry.prevPos.lat, entry.prevPos.lng,
+                lat, lng
             );
-            if (distance > MAXIMUM_POSITION_DIFFERENCE) {
-                entry.marker.setMap(null);
-                if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
-                busMarkers.delete(id);
-                createBusMarker(id, targetPos, routeNum, bearing, hasAlert, isVirtual);
-                const newEntry = busMarkers.get(id);
-                newEntry.prevPos = targetPos;
-                newEntry.route = routeNum;
-                newEntry.hasAlert = hasAlert;
-                newEntry.isVirtual = isVirtual;
-                return;
-            }
-            
-            // For virtual buses, use server bearing if available
-            if (isVirtual && bearing !== null && bearing !== undefined) {
-                entry.targetBearing = bearing;
-                gotNewBearingThisUpdate = true;
-            } else if (entry.prevPos) {
-                // For real buses, calculate bearing from position
-                const dist = google.maps.geometry.spherical.computeDistanceBetween(
-                    new google.maps.LatLng(entry.prevPos),
-                    new google.maps.LatLng(targetPos)
-                );
-                if (dist > 8) {
-                    const newBearing = calculateBearing(entry.prevPos.lat, entry.prevPos.lng, lat, lng);
-                    entry.targetBearing = newBearing;
-                    gotNewBearingThisUpdate = true;
-                }
-            }
-            
-            // Update alert status and virtual status
-            if (entry.hasAlert !== hasAlert || entry.isVirtual !== isVirtual) {
-                entry.hasAlert = hasAlert;
-                entry.isVirtual = isVirtual;
-                updateBusIcon(entry.marker, routeNum, entry.currentBearing || 0, hasAlert, entry.hasMovedOnce, isVirtual);
-            }
-            
-            if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
-            startSmoothAnimation(entry, targetPos, entry.targetBearing || entry.currentBearing || bearing, routeNum, hasAlert, isVirtual);
-            entry.prevPos = targetPos;
-            entry.route = routeNum;
-            entry.hasAlert = hasAlert;
-            entry.isVirtual = isVirtual;
-        } else {
+            entry.targetBearing = newBearing;
+            gotNewBearingThisUpdate = true;
+        }
+    }
+    // ───────────────────────────────────────────────────────────────
+
+    // The rest stays the same:
+    if (entry.hasAlert !== hasAlert || entry.isVirtual !== isVirtual) {
+        entry.hasAlert = hasAlert;
+        entry.isVirtual = isVirtual;
+        updateBusIcon(entry.marker, routeNum, entry.currentBearing || 0, hasAlert, entry.hasMovedOnce, isVirtual);
+    }
+
+    if (entry.animFrame) cancelAnimationFrame(entry.animFrame);
+    startSmoothAnimation(entry, targetPos, entry.targetBearing || entry.currentBearing || bearing, routeNum, hasAlert, isVirtual);
+    entry.prevPos = targetPos;
+    entry.route = routeNum;
+    entry.hasAlert = hasAlert;
+    entry.isVirtual = isVirtual;
+} else {
             createBusMarker(id, targetPos, routeNum, bearing, hasAlert, isVirtual);
             const entry = busMarkers.get(id);
             entry.prevPos = targetPos;
             entry.route = routeNum;
             entry.hasAlert = hasAlert;
             entry.isVirtual = isVirtual;
-            // Set initial bearing for virtual buses
-            if (isVirtual && bearing !== null && bearing !== undefined) {
-                entry.currentBearing = bearing;
-                entry.targetBearing = bearing;
-            }
         }
     });
     
@@ -1129,10 +1124,11 @@ function initMap() {
 }
 
 // ——— Helper functions ———
+
 function createBusMarker(id, position, route, bearing = 0, hasAlert = false, isVirtual = false) {
     const color = routeColors[route] || routeColors.default;
     const svg = createSimpleCircleSvg(route, color, '#ffffff', hasAlert, isVirtual);
-    
+   
     const marker = new google.maps.Marker({
         position,
         map,
@@ -1143,29 +1139,29 @@ function createBusMarker(id, position, route, bearing = 0, hasAlert = false, isV
         },
         zIndex: 900
     });
-    
+   
     marker.addListener('click', () => {
         const busData = busDataCache.get(id);
         if (!busData) {
             console.log('No bus data found for id:', id);
             return;
         }
-        
+       
         const content = createBusInfoWindow(busData);
         const iw = new google.maps.InfoWindow({
             content,
             maxWidth: 350
         });
-        
+       
         if (window.currentInfoWindow) window.currentInfoWindow.close();
         iw.open(map, marker);
         window.currentInfoWindow = iw;
     });
-    
+   
     busMarkers.set(id, {
         marker,
         route,
-        currentBearing: isVirtual ? bearing : 0,
+        currentBearing: 0,
         prevPos: position,
         hasMovedOnce: false,
         hasAlert: hasAlert,
@@ -1175,51 +1171,37 @@ function createBusMarker(id, position, route, bearing = 0, hasAlert = false, isV
         startPos: null,
         targetPos: null,
         startBearing: null,
-        targetBearing: isVirtual ? bearing : null
+        targetBearing: null
     });
-    
-    // For virtual buses, immediately update to bus icon with correct bearing
-    if (isVirtual) {
-        const entry = busMarkers.get(id);
-        entry.hasMovedOnce = true;
-        updateBusIcon(marker, route, bearing, hasAlert, true, isVirtual);
-        marker.setZIndex(950);
-    }
 }
 
 function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert, isVirtual = false) {
     const marker = entry.marker;
-    
+   
     // Determine animation duration based on bus type
     const ANIMATION_DURATION = isVirtual ? VIRTUAL_BUS_ANIMATION_DURATION : REAL_BUS_ANIMATION_DURATION;
-    
-    // Virtual buses always show as "moved" and use server bearing
-    if (!entry.hasMovedOnce && (entry.prevPos || isVirtual)) {
+   
+    // Switch to bus icon on meaningful movement (same for real + virtual)
+    if (!entry.hasMovedOnce && entry.prevPos) {
         const dist = google.maps.geometry.spherical.computeDistanceBetween(
-            new google.maps.LatLng(entry.prevPos || targetPos),
+            new google.maps.LatLng(entry.prevPos),
             new google.maps.LatLng(targetPos)
         );
-        if (dist > 8 || isVirtual) {
+        if (dist > 8) {
             entry.hasMovedOnce = true;
             updateBusIcon(marker, route, targetBearing, hasAlert, true, isVirtual);
             marker.setZIndex(950);
         }
     }
-    
+   
     const startPos = marker.getPosition();
     entry.route = route;
     entry.startTime = performance.now();
     entry.startPos = { lat: startPos.lat(), lng: startPos.lng() };
     entry.targetPos = targetPos;
-    
-    // For virtual buses, always use server bearing, don't animate bearing changes
-    if (isVirtual) {
-        entry.currentBearing = targetBearing;
-        entry.targetBearing = targetBearing;
-        entry.startBearing = targetBearing;
-        entry.bearingStartTime = null; // No bearing animation for virtual
-    } else if (Math.abs(getShortestAnglePath(entry.currentBearing || 0, targetBearing)) > 1) {
-        // Real buses get bearing animation
+   
+    // Start smooth bearing animation if direction changed significantly
+    if (Math.abs(getShortestAnglePath(entry.currentBearing || 0, targetBearing)) > 1) {
         if (!entry.bearingStartTime ||
             Math.abs(getShortestAnglePath(entry.targetBearing || 0, targetBearing)) > 1) {
             entry.bearingStartTime = performance.now();
@@ -1227,23 +1209,19 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert, 
             entry.targetBearing = targetBearing;
         }
     }
-    
+   
     function animate(time) {
         const ep = time - entry.startTime;
         const pp = Math.min(ep / ANIMATION_DURATION, 1);
-       
+      
         const lat = entry.startPos.lat + (targetPos.lat - entry.startPos.lat) * pp;
         const lng = entry.startPos.lng + (targetPos.lng - entry.startPos.lng) * pp;
         marker.setPosition({ lat, lng });
-       
-        // For virtual buses, use static server bearing
-        if (isVirtual) {
-            entry.currentBearing = targetBearing;
-        } else if (entry.hasMovedOnce && entry.bearingStartTime) {
-            // Real buses get bearing animation
+      
+        if (entry.hasMovedOnce && entry.bearingStartTime) {
             const eb = time - entry.bearingStartTime;
             const pb = Math.min(eb / BEARING_ANIMATION_DURATION, 1);
-           
+          
             let currentBearing;
             if (pb < 1) {
                 const delta = getShortestAnglePath(entry.startBearing, entry.targetBearing);
@@ -1253,16 +1231,17 @@ function startSmoothAnimation(entry, targetPos, targetBearing, route, hasAlert, 
                 entry.bearingStartTime = null;
                 entry.startBearing = null;
             }
-           
+          
             entry.currentBearing = currentBearing;
             updateAllBusIcons();
         }
-       
-        if (pp < 1 || (entry.hasMovedOnce && entry.bearingStartTime && !isVirtual)) {
+      
+        // Continue while position OR bearing is still animating
+        if (pp < 1 || entry.bearingStartTime) {
             entry.animFrame = requestAnimationFrame(animate);
         }
     }
-    
+   
     entry.animFrame = requestAnimationFrame(animate);
 }
 
@@ -1270,9 +1249,8 @@ function updateBusIcon(marker, route, bearing, hasAlert, isBus = true, isVirtual
     const color = routeColors[route] || routeColors.default;
     const bg = blinkState ? '#ffffff' : color;
     const text = blinkState ? color : '#ffffff';
-    
+   
     let svg;
-    // Show bus icon if it's a bus OR if it's virtual (virtual buses always show as buses)
     if (isBus || isVirtual) {
         svg = createBusSvg(route, bg, text, bearing, hasAlert, isVirtual);
         marker.setIcon({
@@ -1297,7 +1275,7 @@ function updateAllBusIcons() {
         const color = routeColors[route] || routeColors.default;
         const bg = blinkState ? '#ffffff' : color;
         const text = blinkState ? color : '#ffffff';
-        
+       
         if (hasMovedOnce || isVirtual) {
             const svg = createBusSvg(route, bg, text, currentBearing, hasAlert, isVirtual);
             marker.setIcon({
