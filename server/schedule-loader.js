@@ -383,7 +383,8 @@ class ScheduleLoader {
     return shapes;
   }
 
-  createCalendarDatesMap(calendarDatesArray) {
+ // In schedule-loader.js, update createCalendarDatesMap:
+createCalendarDatesMap(calendarDatesArray) {
   console.log(`\n📅 createCalendarDatesMap: Processing ${calendarDatesArray?.length || 0} entries`);
   
   const map = {};
@@ -403,15 +404,19 @@ class ScheduleLoader {
         return;
       }
       
+      // Initialize structure if needed
       if (!map[serviceId]) {
         map[serviceId] = {
           added: new Set(),
-          removed: new Set()
+          removed: new Set(),
+          // For backward compatibility, also maintain a simple Set
+          allDates: new Set()
         };
       }
       
       if (exceptionType === 1) {
         map[serviceId].added.add(date);
+        map[serviceId].allDates.add(date);
         addedCount++;
       } else if (exceptionType === 2) {
         map[serviceId].removed.add(date);
