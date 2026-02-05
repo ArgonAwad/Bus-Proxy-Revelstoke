@@ -257,6 +257,9 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
   if (!pos) return null;
 
   const tripRecord = scheduleData.tripsMap?.[tripId] || {};
+  const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+  const firstStop = staticStopTimes?.[0];
+  const startTime = firstStop ? formatTime(timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time)) : '';
 
   return {
     latitude: pos.latitude,
@@ -275,9 +278,9 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
       routeId: tripRecord.route_id || 'UNKNOWN',
       directionId: Number(tripRecord.direction_id) || 0,
       blockId: tripRecord.block_id || extractBlockIdFromTripId(tripId),
-      tripHeadsign: tripRecord.trip_headsign || null,   // ← from trips.txt
-      startDate: '',
-      startTime: ''
+      tripHeadsign: tripRecord.trip_headsign || null,   // from trips.txt
+      startDate: getCurrentDateStr(),
+      startTime
     },
     metadata: {
       source: 'static_schedule',
@@ -312,7 +315,7 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   return adjustedCurrentTime >= (firstTime - buffer) && adjustedCurrentTime <= (adjustedLastTime + buffer);
 }
 
-// 16–19. (unchanged calendar & block functions — keeping your 10-min buffer version)
+// 16. Get today's date in YYYYMMDD format
 function getCurrentDateStr() {
   const today = new Date();
   const year = today.getFullYear();
@@ -321,6 +324,7 @@ function getCurrentDateStr() {
   return `${year}${month}${day}`;
 }
 
+// 17. Check if a trip should run today based on service_id
 function isTripScheduledToday(tripId, scheduleData) {
   if (!scheduleData?.tripsMap || !scheduleData?.calendarDates) return true;
   const trip = scheduleData.tripsMap[tripId];
@@ -331,6 +335,7 @@ function isTripScheduledToday(tripId, scheduleData) {
   return serviceDates.has(todayStr);
 }
 
+// 18. Enhanced version that checks both time AND date
 function isTripActiveAndScheduled(tripId, scheduleData, currentScheduleSec, operatorId = '36') {
   if (!isTripScheduledToday(tripId, scheduleData)) return false;
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
@@ -338,6 +343,7 @@ function isTripActiveAndScheduled(tripId, scheduleData, currentScheduleSec, oper
   return isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec);
 }
 
+// 19. Calculate schedule time from a Unix timestamp
 function getScheduleTimeFromUnix(unixTimestamp, operatorId = '36') {
   const date = new Date(unixTimestamp * 1000);
   let timeZone;
@@ -351,6 +357,7 @@ function getScheduleTimeFromUnix(unixTimestamp, operatorId = '36') {
   return localTime.getHours() * 3600 + localTime.getMinutes() * 60 + localTime.getSeconds();
 }
 
+// 20. Check if block is active (with 10-minute buffer before first trip)
 function isBlockActive(blockId, scheduleData, currentScheduleSec, operatorId = '36') {
   const tripsInBlock = [];
   for (const [tripId, trip] of Object.entries(scheduleData.tripsMap)) {
@@ -379,6 +386,7 @@ function isBlockActive(blockId, scheduleData, currentScheduleSec, operatorId = '
   return adjustedCurrentTime >= (firstTrip.firstTime - buffer) && adjustedCurrentTime <= adjustedLastTime;
 }
 
+// 21. Find current or most recent trip in block
 function findCurrentOrRecentTripInBlock(blockId, scheduleData, currentScheduleSec, operatorId = '36') {
   const tripsInBlock = [];
   for (const [tripId, trip] of Object.entries(scheduleData.tripsMap)) {
@@ -446,7 +454,7 @@ function findCurrentOrRecentTripInBlock(blockId, scheduleData, currentScheduleSe
   return null;
 }
 
-// 20. Block-based virtual bus — now returns richer GTFS-RT-like object
+// 22. Block-based virtual bus — now returns richer GTFS-RT-like object
 function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeSec, operatorId = '36') {
   const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
 
@@ -459,22 +467,47 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
 
   const tripId = tripInfo.tripId;
   const tripRecord = scheduleData.tripsMap?.[tripId] || {};
+  const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
+  const firstStop = staticStopTimes?.[0];
+  const startTime = firstStop ? formatTime(timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time)) : '';
 
   if (tripInfo.isDuringTrip) {
-    const pos = calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, operatorId);
+    const pos = calculateExactPositionAlongShape(tripId, scheduleData, scheduleTimeSec, operatorId);
     if (!pos) return null;
+    const speed = estimateSpeed(pos.distA, pos.distB, pos.timeA, pos.timeB); // Use segment for speed if available
+
     return {
-      ...pos,
-      tripId,
-      routeId: tripInfo.routeId,
-      blockId,
+      latitude: pos.latitude,
+      longitude: pos.longitude,
+      bearing: pos.bearing ?? null,
+      speed: speed,
+      currentStopSequence: pos.currentStopSequence ?? 1,
+      stopId: pos.stopId ?? null,
+      timestamp: Math.floor(currentTimeSec),
+      currentStatus: pos.progress < 0.01 ? 1 : pos.progress >= 0.99 ? 0 : 2,
+      progress: pos.progress,
+      trip: {
+        tripId,
+        routeId: tripRecord.route_id || 'UNKNOWN',
+        directionId: Number(tripRecord.direction_id) || 0,
+        blockId,
+        tripHeadsign: tripRecord.trip_headsign || null,
+        startDate: getCurrentDateStr(),
+        startTime
+      },
+      segment: pos.segment,
       status: 'IN_TRANSIT',
-      layover: false
+      layover: false,
+      crossedMidnight: pos.crossedMidnight,
+      metadata: {
+        source: 'static_schedule',
+        isVirtual: true,
+        speedSource: 'calculated_from_shape_and_time'
+      }
     };
   }
 
   // Layover or before first trip
-  const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
   if (!staticStopTimes || staticStopTimes.length === 0) return null;
 
   let stop, progress, status, timeInfo, currentStatus;
@@ -508,12 +541,12 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
     currentStatus,
     trip: {
       tripId,
-      routeId: tripInfo.routeId,
+      routeId: tripInfo.route_id,
       directionId: Number(tripRecord.direction_id) || 0,
       blockId,
       tripHeadsign: tripRecord.trip_headsign || null,
-      startDate: '',
-      startTime: ''
+      startDate: getCurrentDateStr(),
+      startTime
     },
     segment: {
       start: stop.stop_id,
