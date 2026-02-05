@@ -1,16 +1,3 @@
-<?php
-// Enqueue parent theme styles
-function enqueue_parent_styles() {
-    wp_enqueue_style('parent-style', get_template_directory_uri() . '/style.css');
-}
-add_action('wp_enqueue_scripts', 'enqueue_parent_styles');
-
-// Viewer Shortcode
-function busviewer_shortcode() {
-	
-    // Start output buffering to include HTML and JavaScript
-    ob_start();
-    ?>
 <!DOCTYPE html>
 <html>
 <head>
