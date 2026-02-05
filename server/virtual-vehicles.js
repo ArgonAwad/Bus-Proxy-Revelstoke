@@ -245,7 +245,7 @@ function timeStringToSeconds(timeStr) {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-// 13. Main function — single trip position (used internally)
+// 13. Main function — single trip position (used internally by block function)
 function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, operatorId = '36') {
   if (!isTripScheduledToday(tripId, scheduleData)) {
     console.log(`[calculateVirtualBusPosition] ${tripId} not scheduled today`);
@@ -254,12 +254,22 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
 
   const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
   const pos = calculateExactPositionAlongShape(tripId, scheduleData, scheduleTimeSec, operatorId);
-  if (!pos) return null;
+  if (!pos) {
+    console.log(`[calculateVirtualBusPosition] No valid position for trip ${tripId}`);
+    return null;
+  }
 
   const tripRecord = scheduleData.tripsMap?.[tripId] || {};
+
+  // Get first stop time for meaningful startTime
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
   const firstStop = staticStopTimes?.[0];
-  const startTime = firstStop ? formatTime(timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time)) : '';
+  let startTime = '';
+  if (firstStop) {
+    const depOrArr = firstStop.departure_time || firstStop.arrival_time || '00:00:00';
+    const sec = timeStringToSeconds(depOrArr);
+    startTime = formatTime(sec);
+  }
 
   return {
     latitude: pos.latitude,
@@ -269,7 +279,7 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
     currentStopSequence: pos.currentStopSequence ?? 1,
     stopId: pos.stopId ?? null,
     timestamp: Math.floor(currentTimeSec),
-    currentStatus: pos.progress < 0.01 ? 1 : pos.progress >= 0.99 ? 0 : 2, // 0=INCOMING_AT, 1=STOPPED_AT, 2=IN_TRANSIT_TO
+    currentStatus: pos.progress < 0.01 ? 1 : pos.progress >= 0.99 ? 0 : 2,
     progress: pos.progress,
     segment: pos.segment,
     crossedMidnight: pos.crossedMidnight,
@@ -278,9 +288,9 @@ function calculateVirtualBusPosition(tripId, currentTimeSec, scheduleData, opera
       routeId: tripRecord.route_id || 'UNKNOWN',
       directionId: Number(tripRecord.direction_id) || 0,
       blockId: tripRecord.block_id || extractBlockIdFromTripId(tripId),
-      tripHeadsign: tripRecord.trip_headsign || null,   // from trips.txt
-      startDate: getCurrentDateStr(),
-      startTime
+      tripHeadsign: tripRecord.trip_headsign || null,
+      startDate: getCurrentDateStr(),   // YYYYMMDD
+      startTime: startTime || '—'       // e.g. "05:20:00"
     },
     metadata: {
       source: 'static_schedule',
@@ -454,38 +464,50 @@ function findCurrentOrRecentTripInBlock(blockId, scheduleData, currentScheduleSe
   return null;
 }
 
-// 22. Block-based virtual bus — now returns richer GTFS-RT-like object
+// 22. Block-based virtual bus — returns richer GTFS-RT-like object
 function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeSec, operatorId = '36') {
   const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
 
   if (!isBlockActive(blockId, scheduleData, scheduleTimeSec, operatorId)) {
+    console.log(`[calculateVirtualBusPositionForBlock] Block ${blockId} not active`);
     return null;
   }
 
   const tripInfo = findCurrentOrRecentTripInBlock(blockId, scheduleData, scheduleTimeSec, operatorId);
-  if (!tripInfo) return null;
+  if (!tripInfo) {
+    console.log(`[calculateVirtualBusPositionForBlock] No trip found for block ${blockId}`);
+    return null;
+  }
 
   const tripId = tripInfo.tripId;
   const tripRecord = scheduleData.tripsMap?.[tripId] || {};
+
+  // Get first stop time (used for both in-transit and layover cases)
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
   const firstStop = staticStopTimes?.[0];
-  const startTime = firstStop ? formatTime(timeStringToSeconds(firstStop.departure_time || firstStop.arrival_time)) : '';
+  let startTime = '';
+  if (firstStop) {
+    const depOrArr = firstStop.departure_time || firstStop.arrival_time || '00:00:00';
+    const sec = timeStringToSeconds(depOrArr);
+    startTime = formatTime(sec);
+  }
 
   if (tripInfo.isDuringTrip) {
     const pos = calculateExactPositionAlongShape(tripId, scheduleData, scheduleTimeSec, operatorId);
     if (!pos) return null;
-    const speed = estimateSpeed(pos.distA, pos.distB, pos.timeA, pos.timeB); // Use segment for speed if available
 
     return {
       latitude: pos.latitude,
       longitude: pos.longitude,
       bearing: pos.bearing ?? null,
-      speed: speed,
+      speed: pos.speed,
       currentStopSequence: pos.currentStopSequence ?? 1,
       stopId: pos.stopId ?? null,
       timestamp: Math.floor(currentTimeSec),
       currentStatus: pos.progress < 0.01 ? 1 : pos.progress >= 0.99 ? 0 : 2,
       progress: pos.progress,
+      segment: pos.segment,
+      crossedMidnight: pos.crossedMidnight,
       trip: {
         tripId,
         routeId: tripRecord.route_id || 'UNKNOWN',
@@ -493,12 +515,10 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
         blockId,
         tripHeadsign: tripRecord.trip_headsign || null,
         startDate: getCurrentDateStr(),
-        startTime
+        startTime: startTime || '—'
       },
-      segment: pos.segment,
       status: 'IN_TRANSIT',
       layover: false,
-      crossedMidnight: pos.crossedMidnight,
       metadata: {
         source: 'static_schedule',
         isVirtual: true,
@@ -541,12 +561,12 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
     currentStatus,
     trip: {
       tripId,
-      routeId: tripInfo.route_id,
+      routeId: tripRecord.route_id || 'UNKNOWN',
       directionId: Number(tripRecord.direction_id) || 0,
       blockId,
       tripHeadsign: tripRecord.trip_headsign || null,
       startDate: getCurrentDateStr(),
-      startTime
+      startTime: startTime || '—'
     },
     segment: {
       start: stop.stop_id,
