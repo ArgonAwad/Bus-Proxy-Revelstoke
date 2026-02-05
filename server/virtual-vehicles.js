@@ -381,6 +381,10 @@ function isTripScheduledToday(tripId, scheduleData) {
     if (dateExceptions.removed && dateExceptions.removed.has(todayStr)) {
       isScheduled = false;
     }
+    // Backward compatibility check
+    if (dateExceptions.allDates && dateExceptions.allDates.has(todayStr)) {
+      isScheduled = true;
+    }
   }
 
   // 3. Midnight-crossing continuation: allow yesterday's service if early morning
@@ -411,6 +415,10 @@ function isTripScheduledToday(tripId, scheduleData) {
       if (dateExceptions.removed && dateExceptions.removed.has(yesterdayStr)) {
         isScheduled = false;
       }
+      // Backward compatibility
+      if (dateExceptions.allDates && dateExceptions.allDates.has(yesterdayStr)) {
+        isScheduled = true;
+      }
     }
   }
 
@@ -418,13 +426,20 @@ function isTripScheduledToday(tripId, scheduleData) {
   // then the trip ONLY runs on explicitly added dates
   if (!weekly && dateExceptions) {
     // Only check added dates (removed dates don't apply if no weekly pattern)
-    if (dateExceptions.added && dateExceptions.added.has(todayStr)) {
+    const hasAddedToday = dateExceptions.added && dateExceptions.added.has(todayStr);
+    const hasAllDatesToday = dateExceptions.allDates && dateExceptions.allDates.has(todayStr);
+    
+    if (hasAddedToday || hasAllDatesToday) {
       isScheduled = true;
     } else if (currentSec < 21600) { // Check yesterday for early morning
       const yesterday = new Date(today);
       yesterday.setDate(today.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
-      if (dateExceptions.added && dateExceptions.added.has(yesterdayStr)) {
+      
+      const hasAddedYesterday = dateExceptions.added && dateExceptions.added.has(yesterdayStr);
+      const hasAllDatesYesterday = dateExceptions.allDates && dateExceptions.allDates.has(yesterdayStr);
+      
+      if (hasAddedYesterday || hasAllDatesYesterday) {
         isScheduled = true;
       }
     } else {
