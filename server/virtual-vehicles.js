@@ -371,25 +371,25 @@ function isTripScheduledToday(tripId, scheduleData) {
     }
   }
 
-  // 2. Explicit calendar_dates exceptions
+  // 2. Explicit calendar_dates exceptions for today
   const dates = scheduleData.calendarDates?.[serviceId];
   if (dates && dates.has(todayStr)) {
     isScheduled = true;
   }
 
-  // 3. Special handling for midnight-crossing trips:
-  // If current time is early morning (before ~6 AM) and yesterday had the service,
-  // consider it still valid (for late-night services continuing past midnight)
-  if (!isScheduled && currentSec < 21600) { // before 6:00 AM
+  // 3. Midnight-crossing fix: allow trips from yesterday if early morning and likely crossing
+  if (!isScheduled && currentSec < 21600) { // before 6:00 AM local
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
 
+    // Check if yesterday was added in calendar_dates
     if (dates && dates.has(yesterdayStr)) {
-      // Yesterday was explicitly added → assume late-night continuation
       isScheduled = true;
-    } else if (weekly) {
-      const yesterdayDay = (dayOfWeek - 1 + 7) % 7; // previous day
+    }
+    // Or if weekly pattern allows yesterday
+    else if (weekly) {
+      const yesterdayDay = (dayOfWeek - 1 + 7) % 7;
       const days = [weekly.sunday, weekly.monday, weekly.tuesday, weekly.wednesday,
                     weekly.thursday, weekly.friday, weekly.saturday];
       if (days[yesterdayDay]) {
@@ -398,7 +398,8 @@ function isTripScheduledToday(tripId, scheduleData) {
     }
   }
 
-  console.log(`[isTripScheduledToday] ${tripId} (service ${serviceId}) on ${todayStr} (${formatTime(currentSec)}): ${isScheduled ? 'YES' : 'NO'}`);
+  // Debug log to see why each trip is accepted/rejected
+  console.log(`[isTripScheduledToday] ${tripId} (service ${serviceId}) on ${todayStr} (${formatTime(currentSec)}): ${isScheduled ? 'YES' : 'NO'} | yesterday check: ${currentSec < 21600 ? 'applied' : 'skipped'}`);
 
   return isScheduled;
 }
