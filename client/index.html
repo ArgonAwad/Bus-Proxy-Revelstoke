@@ -1,3 +1,16 @@
+<?php
+// Enqueue parent theme styles
+function enqueue_parent_styles() {
+    wp_enqueue_style('parent-style', get_template_directory_uri() . '/style.css');
+}
+add_action('wp_enqueue_scripts', 'enqueue_parent_styles');
+
+// Viewer Shortcode
+function busviewer_shortcode() {
+	
+    // Start output buffering to include HTML and JavaScript
+    ob_start();
+    ?>
 <!DOCTYPE html>
 <html>
 <head>
@@ -183,10 +196,11 @@
   </div>
 
   <script>
-    const API_KEY = 'ZIzaSyAtXYoRZgwc_5jm7yvPF0irX_1HrtqLgHQ';
+    const API_KEY = 'AIzaSyAtXYoRZgwc_5jm7yvPF0irX_1HrtqLgHQ';
 let map, userMarker;
 const busMarkers = new Map();
 let blinkState = false;
+let virtualPulseStart = performance.now();
 const BUS_WIDTH = 52;
 const BUS_HEIGHT = 80;
 
@@ -194,12 +208,14 @@ const BUS_HEIGHT = 80;
 const REAL_BUS_ANIMATION_DURATION = 15000;    // 15 seconds for real buses
 const VIRTUAL_BUS_ANIMATION_DURATION = 5000;  // 5 seconds for virtual buses
 const BEARING_ANIMATION_DURATION = 2000;      // 2 seconds for bearing changes
+const VIRTUAL_PULSE_DURATION = 2500;     // full cycle (scale up → down → up) = 2 seconds
+const VIRTUAL_PULSE_SCALE_MIN = 1.0;
+const VIRTUAL_PULSE_SCALE_MAX = 1.2;
+const VIRTUAL_PULSE_OPACITY_MIN = 1.0;
+const VIRTUAL_PULSE_OPACITY_MAX = 0.5;
 
 const MAXIMUM_POSITION_DIFFERENCE = 500;
 const routeColors = { '1': '#1a73e8', '3': '#f9a825', '5': '#34a853', default: '#666666' };
-
-// Virtual bus opacity (0.0 to 1.0)
-const VIRTUAL_BUS_OPACITY = 0.5;
 
 // Server endpoints with redundancy
 const PRIMARY_SERVER = 'https://bus-proxy-revelstoke.vercel.app/api/buses';
@@ -450,19 +466,17 @@ function updateBusCountDisplay(count) {
     }
 }
 
-// Create bus SVG functions with opacity for virtual buses
+// Create bus SVG functions with no fixed opacity for virtual buses
 function createBusSvg(route, bgColor, textColor, bearing = 0, hasAlert = false, isVirtual = false) {
     const rotate = bearing !== 0 ? `transform="rotate(${bearing} 42 42)"` : '';
     const alertIcon = hasAlert ? `
         <circle cx="68" cy="16" r="10" fill="#ff4444" stroke="#fff" stroke-width="2"/>
         <text x="68" y="20" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold" font-family="Arial,sans-serif">!</text>
     ` : '';
-    
-    // Apply opacity for virtual buses
-    const opacity = isVirtual ? VIRTUAL_BUS_OPACITY : 1;
-    
+
+    // Removed the fixed opacity= line — let Google Maps icon.opacity control it
     return `<svg width="${BUS_WIDTH}" height="${BUS_HEIGHT}" viewBox="0 0 84 84" xmlns="http://www.w3.org/2000/svg">
-        <g ${rotate} opacity="${opacity}">
+        <g ${rotate}>
           <circle cx="16" cy="28" r="8" fill="#111"/>
           <circle cx="48" cy="28" r="8" fill="#111"/>
           <circle cx="16" cy="56" r="8" fill="#111"/>
@@ -485,18 +499,34 @@ function createSimpleCircleSvg(route, bgColor, textColor, hasAlert = false, isVi
         <circle cx="24" cy="6" r="6" fill="#ff4444" stroke="#fff" stroke-width="1"/>
         <text x="24" y="9" text-anchor="middle" fill="#fff" font-size="6" font-weight="bold" font-family="Arial,sans-serif">!</text>
     ` : '';
-    
-    // Apply opacity for virtual buses
-    const opacity = isVirtual ? VIRTUAL_BUS_OPACITY : 1;
-    
+
+    // Removed fixed opacity here too
     return `<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
-        <g opacity="${opacity}">
+        <g>
             <circle cx="15" cy="15" r="12" fill="${bgColor}" stroke="#fff" stroke-width="2"/>
             <text x="15" y="20" text-anchor="middle" fill="${textColor}"
                   font-size="16" font-weight="bold" font-family="Arial,sans-serif">${route}</text>
             ${alertIcon}
         </g>
     </svg>`;
+}
+
+function getVirtualPulseValues() {
+    const now = performance.now();
+    const elapsed = now - virtualPulseStart;
+    const t = (elapsed % VIRTUAL_PULSE_DURATION) / VIRTUAL_PULSE_DURATION; // 0.0 → 1.0
+
+    // Smooth sine-based pulse (gentler than triangle/linear)
+    const sine = Math.sin(t * Math.PI * 2);           // -1 → 1
+    const norm = (sine + 1) / 2;                      // 0 → 1
+
+    const scale = VIRTUAL_PULSE_SCALE_MIN +
+                  (VIRTUAL_PULSE_SCALE_MAX - VIRTUAL_PULSE_SCALE_MIN) * norm;
+
+    const opacity = VIRTUAL_PULSE_OPACITY_MIN +
+                    (VIRTUAL_PULSE_OPACITY_MAX - VIRTUAL_PULSE_OPACITY_MIN) * norm;
+
+    return { scale, opacity };
 }
 
 function calculateBearing(prevLat, prevLng, lat, lng) {
@@ -1270,28 +1300,53 @@ function updateBusIcon(marker, route, bearing, hasAlert, isBus = true, isVirtual
 }
 
 function updateAllBusIcons() {
+    const { scale: vScale, opacity: vOpacity } = getVirtualPulseValues();
+
     busMarkers.forEach(entry => {
         const { marker, route, currentBearing = 0, hasMovedOnce, hasAlert = false, isVirtual = false } = entry;
         const color = routeColors[route] || routeColors.default;
         const bg = blinkState ? '#ffffff' : color;
         const text = blinkState ? color : '#ffffff';
-       
+
+        let svg;
+        let scaledSize;
+        let anchor;
+
         if (hasMovedOnce || isVirtual) {
-            const svg = createBusSvg(route, bg, text, currentBearing, hasAlert, isVirtual);
-            marker.setIcon({
-                url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
-                scaledSize: new google.maps.Size(BUS_WIDTH, BUS_HEIGHT),
-                anchor: new google.maps.Point(BUS_WIDTH/2, BUS_HEIGHT/2 + 6),
-                rotation: currentBearing
-            });
+            svg = createBusSvg(route, bg, text, currentBearing, hasAlert, isVirtual);
+            scaledSize = new google.maps.Size(BUS_WIDTH, BUS_HEIGHT);
+            anchor = new google.maps.Point(BUS_WIDTH/2, BUS_HEIGHT/2 + 6);
+
+            if (isVirtual) {
+                scaledSize = new google.maps.Size(BUS_WIDTH * vScale, BUS_HEIGHT * vScale);
+                anchor = new google.maps.Point(
+                    (BUS_WIDTH * vScale)/2,
+                    (BUS_HEIGHT * vScale)/2 + 6 * vScale
+                );
+
+                // Inject opacity into the SVG group
+                svg = svg.replace('<g', `<g opacity="${vOpacity}"`);
+            }
         } else {
-            const svg = createSimpleCircleSvg(route, bg, text, hasAlert, isVirtual);
-            marker.setIcon({
-                url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
-                scaledSize: new google.maps.Size(40, 40),
-                anchor: new google.maps.Point(20, 20)
-            });
+            svg = createSimpleCircleSvg(route, bg, text, hasAlert, isVirtual);
+            scaledSize = new google.maps.Size(40, 40);
+            anchor = new google.maps.Point(20, 20);
+
+            if (isVirtual) {
+                scaledSize = new google.maps.Size(40 * vScale, 40 * vScale);
+                // For circle version too
+                svg = svg.replace('<g', `<g opacity="${vOpacity}"`);
+            }
         }
+
+        const icon = {
+            url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+            scaledSize: scaledSize,
+            anchor: anchor
+            // no icon.opacity needed anymore
+        };
+
+        marker.setIcon(icon);
     });
 }
 
