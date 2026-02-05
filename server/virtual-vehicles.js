@@ -338,7 +338,7 @@ function getCurrentDateStr() {
 function isTripScheduledToday(tripId, scheduleData) {
   if (!scheduleData?.tripsMap) {
     console.log(`[isTripScheduledToday] Missing tripsMap for ${tripId}`);
-    return true;
+    return false;
   }
 
   const trip = scheduleData.tripsMap[tripId];
@@ -350,14 +350,13 @@ function isTripScheduledToday(tripId, scheduleData) {
   const serviceId = trip.service_id;
   const todayStr = getCurrentDateStr();
   const todayNum = parseInt(todayStr, 10);
-
   const today = new Date();
   const dayOfWeek = today.getDay();
   const currentSec = getScheduleTimeInSeconds();
 
   let isScheduled = false;
 
-  // 1. Weekly pattern (calendar.txt)
+  // 1. Weekly pattern (calendar.txt) - if exists
   const weekly = scheduleData.calendars?.[serviceId];
   if (weekly) {
     const start = parseInt(weekly.start_date, 10);
@@ -371,10 +370,17 @@ function isTripScheduledToday(tripId, scheduleData) {
     }
   }
 
-  // 2. Explicit exceptions for today (calendar_dates.txt)
-  const dates = scheduleData.calendarDates?.[serviceId];
-  if (dates && dates.has(todayStr)) {
-    isScheduled = true;
+  // 2. Explicit exceptions (calendar_dates.txt)
+  const dateExceptions = scheduleData.calendarDates?.[serviceId];
+  if (dateExceptions) {
+    // Check if today is explicitly added
+    if (dateExceptions.added && dateExceptions.added.has(todayStr)) {
+      isScheduled = true;
+    }
+    // Check if today is explicitly removed (overrides weekly pattern)
+    if (dateExceptions.removed && dateExceptions.removed.has(todayStr)) {
+      isScheduled = false;
+    }
   }
 
   // 3. Midnight-crossing continuation: allow yesterday's service if early morning
@@ -382,13 +388,9 @@ function isTripScheduledToday(tripId, scheduleData) {
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
-
-    // Yesterday explicit add
-    if (dates && dates.has(yesterdayStr)) {
-      isScheduled = true;
-    }
-    // Or yesterday weekly pattern
-    else if (weekly) {
+    
+    // Check yesterday's weekly pattern
+    if (weekly) {
       const yesterdayDay = (dayOfWeek - 1 + 7) % 7;
       const days = [
         weekly.sunday, weekly.monday, weekly.tuesday, weekly.wednesday,
@@ -398,10 +400,39 @@ function isTripScheduledToday(tripId, scheduleData) {
         isScheduled = true;
       }
     }
+    
+    // Check yesterday's explicit exceptions
+    if (dateExceptions) {
+      // Yesterday was explicitly added
+      if (dateExceptions.added && dateExceptions.added.has(yesterdayStr)) {
+        isScheduled = true;
+      }
+      // Yesterday was explicitly removed (should already be false from above)
+      if (dateExceptions.removed && dateExceptions.removed.has(yesterdayStr)) {
+        isScheduled = false;
+      }
+    }
   }
 
-  console.log(`[isTripScheduledToday] ${tripId} (svc ${serviceId}) on ${todayStr} (${formatTime(currentSec)}): ${isScheduled ? 'YES' : 'NO'} | yesterday chk: ${currentSec < 21600 ? 'applied' : 'skipped'}`);
+  // 4. SPECIAL CASE: If there's NO weekly pattern but there ARE date exceptions,
+  // then the trip ONLY runs on explicitly added dates
+  if (!weekly && dateExceptions) {
+    // Only check added dates (removed dates don't apply if no weekly pattern)
+    if (dateExceptions.added && dateExceptions.added.has(todayStr)) {
+      isScheduled = true;
+    } else if (currentSec < 21600) { // Check yesterday for early morning
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
+      if (dateExceptions.added && dateExceptions.added.has(yesterdayStr)) {
+        isScheduled = true;
+      }
+    } else {
+      isScheduled = false; // Not explicitly added today
+    }
+  }
 
+  console.log(`[isTripScheduledToday] ${tripId} (svc ${serviceId}) on ${todayStr} (${formatTime(currentSec)}): ${isScheduled ? 'YES' : 'NO'}`);
   return isScheduled;
 }
 
