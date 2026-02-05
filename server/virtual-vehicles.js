@@ -336,13 +336,63 @@ function getCurrentDateStr() {
 
 // 17. Check if a trip should run today based on service_id
 function isTripScheduledToday(tripId, scheduleData) {
-  if (!scheduleData?.tripsMap || !scheduleData?.calendarDates) return true;
+  if (!scheduleData?.tripsMap) {
+    console.log(`[isTripScheduledToday] Missing tripsMap for ${tripId}`);
+    return true; // fallback - assume yes if no data
+  }
+
   const trip = scheduleData.tripsMap[tripId];
-  if (!trip || !trip.service_id) return false;
-  const todayStr = getCurrentDateStr();
-  const serviceDates = scheduleData.calendarDates[trip.service_id];
-  if (!serviceDates) return false;
-  return serviceDates.has(todayStr);
+  if (!trip || !trip.service_id) {
+    console.log(`[isTripScheduledToday] No service_id for trip ${tripId}`);
+    return false;
+  }
+
+  const serviceId = trip.service_id;
+  const todayStr = getCurrentDateStr(); // YYYYMMDD e.g. "20260205"
+  const todayNum = parseInt(todayStr, 10);
+
+  // Get today's day of week (0=Sunday, 1=Monday, ..., 6=Saturday)
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+
+  let isScheduled = false;
+
+  // 1. Check weekly pattern from calendar.txt (primary source for regular service)
+  const weekly = scheduleData.calendars?.[serviceId];
+  if (weekly) {
+    const start = parseInt(weekly.start_date, 10);
+    const end = parseInt(weekly.end_date, 10);
+    const withinRange = todayNum >= start && todayNum <= end;
+
+    if (withinRange) {
+      const days = [
+        weekly.sunday,    // 0
+        weekly.monday,    // 1
+        weekly.tuesday,   // 2
+        weekly.wednesday, // 3
+        weekly.thursday,  // 4
+        weekly.friday,    // 5
+        weekly.saturday   // 6
+      ];
+      isScheduled = !!days[dayOfWeek];
+    }
+  }
+
+  // 2. Apply calendar_dates.txt exceptions (add or remove)
+  const dates = scheduleData.calendarDates?.[serviceId];
+  if (dates) {
+    if (dates.has(todayStr)) {
+      // exception_type=1 → added → overrides weekly to YES
+      isScheduled = true;
+    }
+    // Note: if you ever have exception_type=2 (removed), you would set isScheduled=false here
+    // But your file only has type=1, so we don't need to handle removals yet
+  }
+
+  // Debug log for troubleshooting
+  console.log(`[isTripScheduledToday] ${tripId} (service ${serviceId}) on ${todayStr}: ${isScheduled ? 'YES' : 'NO'}`);
+
+  return isScheduled;
 }
 
 // 18. Enhanced version that checks both time AND date
