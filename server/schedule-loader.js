@@ -384,43 +384,51 @@ class ScheduleLoader {
   }
 
   createCalendarDatesMap(calendarDatesArray) {
-    console.log(`\n📅 createCalendarDatesMap: Processing ${calendarDatesArray?.length || 0} entries`);
-    
-    const map = {};
-    let validCount = 0;
-    let skippedCount = 0;
-    
-    calendarDatesArray.forEach(entry => {
-      try {
-        const serviceId = entry.service_id?.trim();
-        const date = entry.date?.trim();
-        const exceptionType = parseInt(entry.exception_type, 10);
-        
-        if (!serviceId || !date) {
-          console.warn('Skipping calendar entry missing service_id or date:', entry);
-          skippedCount++;
-          return;
-        }
-        
-        // Only care about added service (type=1)
-        if (exceptionType === 1) {
-          if (!map[serviceId]) {
-            map[serviceId] = new Set();
-          }
-          map[serviceId].add(date);
-          validCount++;
-        } else {
-          skippedCount++;
-        }
-      } catch (err) {
-        console.error('Error processing calendar entry:', err.message, entry);
+  console.log(`\n📅 createCalendarDatesMap: Processing ${calendarDatesArray?.length || 0} entries`);
+  
+  const map = {};
+  let addedCount = 0;
+  let removedCount = 0;
+  let skippedCount = 0;
+  
+  calendarDatesArray.forEach(entry => {
+    try {
+      const serviceId = entry.service_id?.trim();
+      const date = entry.date?.trim();
+      const exceptionType = parseInt(entry.exception_type, 10);
+      
+      if (!serviceId || !date || isNaN(exceptionType)) {
+        console.warn('Skipping calendar entry missing required fields:', entry);
+        skippedCount++;
+        return;
+      }
+      
+      if (!map[serviceId]) {
+        map[serviceId] = {
+          added: new Set(),
+          removed: new Set()
+        };
+      }
+      
+      if (exceptionType === 1) {
+        map[serviceId].added.add(date);
+        addedCount++;
+      } else if (exceptionType === 2) {
+        map[serviceId].removed.add(date);
+        removedCount++;
+      } else {
+        console.warn(`Unknown exception_type ${exceptionType} for service ${serviceId} on ${date}`);
         skippedCount++;
       }
-    });
-    
-    console.log(`📊 Calendar dates: ${validCount} valid entries, ${skippedCount} skipped`);
-    return map;
-  }
+    } catch (err) {
+      console.error('Error processing calendar entry:', err.message, entry);
+      skippedCount++;
+    }
+  });
+  
+  console.log(`📊 Calendar dates: ${addedCount} added, ${removedCount} removed, ${skippedCount} skipped`);
+  return map;
+}
 
   // NEW: Weekly calendar patterns from calendar.txt
   createCalendarsMap(calendarArray) {
