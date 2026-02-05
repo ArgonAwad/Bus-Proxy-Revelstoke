@@ -338,7 +338,7 @@ function getCurrentDateStr() {
 function isTripScheduledToday(tripId, scheduleData) {
   if (!scheduleData?.tripsMap) {
     console.log(`[isTripScheduledToday] Missing tripsMap for ${tripId}`);
-    return true; // fallback - assume yes if no data
+    return true; // fallback
   }
 
   const trip = scheduleData.tripsMap[tripId];
@@ -348,16 +348,16 @@ function isTripScheduledToday(tripId, scheduleData) {
   }
 
   const serviceId = trip.service_id;
-  const todayStr = getCurrentDateStr(); // YYYYMMDD e.g. "20260205"
+  const todayStr = getCurrentDateStr(); // e.g. "20260205"
   const todayNum = parseInt(todayStr, 10);
 
-  // Get today's day of week (0=Sunday, 1=Monday, ..., 6=Saturday)
   const today = new Date();
   const dayOfWeek = today.getDay();
+  const currentSec = getScheduleTimeInSeconds(); // current local seconds past midnight
 
   let isScheduled = false;
 
-  // 1. Check weekly pattern from calendar.txt (primary source for regular service)
+  // 1. Weekly pattern from calendar.txt
   const weekly = scheduleData.calendars?.[serviceId];
   if (weekly) {
     const start = parseInt(weekly.start_date, 10);
@@ -365,32 +365,40 @@ function isTripScheduledToday(tripId, scheduleData) {
     const withinRange = todayNum >= start && todayNum <= end;
 
     if (withinRange) {
-      const days = [
-        weekly.sunday,    // 0
-        weekly.monday,    // 1
-        weekly.tuesday,   // 2
-        weekly.wednesday, // 3
-        weekly.thursday,  // 4
-        weekly.friday,    // 5
-        weekly.saturday   // 6
-      ];
+      const days = [weekly.sunday, weekly.monday, weekly.tuesday, weekly.wednesday,
+                    weekly.thursday, weekly.friday, weekly.saturday];
       isScheduled = !!days[dayOfWeek];
     }
   }
 
-  // 2. Apply calendar_dates.txt exceptions (add or remove)
+  // 2. Explicit calendar_dates exceptions
   const dates = scheduleData.calendarDates?.[serviceId];
-  if (dates) {
-    if (dates.has(todayStr)) {
-      // exception_type=1 → added → overrides weekly to YES
-      isScheduled = true;
-    }
-    // Note: if you ever have exception_type=2 (removed), you would set isScheduled=false here
-    // But your file only has type=1, so we don't need to handle removals yet
+  if (dates && dates.has(todayStr)) {
+    isScheduled = true;
   }
 
-  // Debug log for troubleshooting
-  console.log(`[isTripScheduledToday] ${tripId} (service ${serviceId}) on ${todayStr}: ${isScheduled ? 'YES' : 'NO'}`);
+  // 3. Special handling for midnight-crossing trips:
+  // If current time is early morning (before ~6 AM) and yesterday had the service,
+  // consider it still valid (for late-night services continuing past midnight)
+  if (!isScheduled && currentSec < 21600) { // before 6:00 AM
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
+
+    if (dates && dates.has(yesterdayStr)) {
+      // Yesterday was explicitly added → assume late-night continuation
+      isScheduled = true;
+    } else if (weekly) {
+      const yesterdayDay = (dayOfWeek - 1 + 7) % 7; // previous day
+      const days = [weekly.sunday, weekly.monday, weekly.tuesday, weekly.wednesday,
+                    weekly.thursday, weekly.friday, weekly.saturday];
+      if (days[yesterdayDay]) {
+        isScheduled = true;
+      }
+    }
+  }
+
+  console.log(`[isTripScheduledToday] ${tripId} (service ${serviceId}) on ${todayStr} (${formatTime(currentSec)}): ${isScheduled ? 'YES' : 'NO'}`);
 
   return isScheduled;
 }
