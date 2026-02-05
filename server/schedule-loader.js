@@ -39,7 +39,7 @@ async loadSchedules() {
     const directory = await unzipper.Open.buffer(Buffer.from(zipBuffer));
     console.log(`📁 ZIP contains ${directory.files.length} files`);
     
-    const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt', 'calendar_dates.txt']; // Added calendar_dates.txt
+    const requiredFiles = ['routes.txt', 'trips.txt', 'stops.txt', 'stop_times.txt', 'shapes.txt', 'calendar.txt', 'calendar_dates.txt'];
     const files = {};
     
     // Extract required files
@@ -75,6 +75,8 @@ async loadSchedules() {
     const stopTimes = this.parseCSV(files['stop_times.txt']);
     const shapes = this.parseCSV(files['shapes.txt']);
     const calendarDates = this.parseCSV(files['calendar_dates.txt']); // NEW
+    const calendar = this.parseCSV(files['calendar.txt'] || '');
+this.scheduleData.calendars = this.createCalendarsMap(calendar);
 
     console.log(`\n📈 Parsed counts:`);
     console.log(`   Routes: ${routes.length}`);
@@ -484,4 +486,30 @@ parseCSVLineSimple(line) {
   }
 }
 
+createCalendarsMap(calendarArray) {
+  const map = {};
+  calendarArray.forEach(entry => {
+    const serviceId = entry.service_id?.trim();
+    if (!serviceId) return;
+
+    map[serviceId] = {
+      monday: entry.monday === '1',
+      tuesday: entry.tuesday === '1',
+      wednesday: entry.wednesday === '1',
+      thursday: entry.thursday === '1',
+      friday: entry.friday === '1',
+      saturday: entry.saturday === '1',
+      sunday: entry.sunday === '1',
+      start_date: entry.start_date?.trim(),
+      end_date: entry.end_date?.trim()
+    };
+  });
+  console.log(`[ScheduleLoader] Loaded ${Object.keys(map).length} weekly calendar patterns`);
+  return map;
+}
+
+
 export default ScheduleLoader;
+
+
+
