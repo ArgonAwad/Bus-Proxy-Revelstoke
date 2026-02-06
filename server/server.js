@@ -486,8 +486,8 @@ app.get('/api/buses', async (req, res) => {
               vehicle: {
                 trip: {
                   tripId: position.trip?.tripId || tripIdsInBlock[0],
-                  startTime: '',
-                  startDate: '',
+                  startTime: position.trip?.startTime || '—',
+                  startDate: position.trip?.startDate || getCurrentDateStr(),
                   routeId: position.trip?.routeId || 'UNKNOWN',
                   directionId: position.trip?.directionId ?? 0,
                   blockId: blockId,
