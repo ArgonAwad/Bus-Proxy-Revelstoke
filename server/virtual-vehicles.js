@@ -343,12 +343,16 @@ function isTripActiveInStaticSchedule(staticStopTimes, currentScheduleSec) {
   return adjustedCurrentTime >= (firstTime - buffer) && adjustedCurrentTime <= (adjustedLastTime + buffer);
 }
 
-// 16. Get today's date in YYYYMMDD format
-function getCurrentDateStr() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = (today.getMonth() + 1).toString().padStart(2, '0');
-  const day = today.getDate().toString().padStart(2, '0');
+// 16. Get today's date in YYYYMMDD format — NOW WITH LOCAL TIME ZONE
+function getCurrentDateStr(operatorId = '36') {
+  const now = new Date();
+  const timeZone = getTimeZoneForOperator(operatorId); // Reuse your existing helper
+  const localDate = new Date(now.toLocaleString('en-US', { timeZone }));
+  
+  const year = localDate.getFullYear();
+  const month = (localDate.getMonth() + 1).toString().padStart(2, '0');
+  const day = localDate.getDate().toString().padStart(2, '0');
+  
   return `${year}${month}${day}`;
 }
 
