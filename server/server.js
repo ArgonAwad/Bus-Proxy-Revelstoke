@@ -21,7 +21,8 @@ import {
   isTripActiveAndScheduled,       // NEW: Add this import
   getScheduleTimeFromUnix,
   isBlockActive,                  // NEW
-  findCurrentOrRecentTripInBlock  // NEW
+  findCurrentOrRecentTripInBlock, // NEW
+  enrichWithHeadsign
 } from './virtual-vehicles.js';
 
 //construct Cache to throttle back virtual bus feed to 5 seconds
@@ -408,10 +409,18 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
 
-    // Process real vehicle positions (add blockId parsing)
+        // Process real vehicle positions (add blockId + headsign from static schedule)
     let processedVehicles = [];
     if (vehicleResult.success && vehicleResult.data?.entity) {
+      // First add block IDs (existing)
       processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data.entity);
+      
+      // Then enrich with headsign (new)
+      if (schedule?.tripsMap) {
+        processedVehicles = enrichWithHeadsign(processedVehicles, schedule);
+      } else {
+        console.warn('[/api/buses] Could not enrich headsigns — tripsMap missing');
+      }
     }
 
     // Process real trip updates (add blockId parsing)
