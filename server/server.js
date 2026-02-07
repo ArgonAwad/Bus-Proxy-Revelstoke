@@ -5,7 +5,7 @@ import protobuf from 'protobufjs';
 import ScheduleLoader from './schedule-loader.js';
 
 // In server.js, change the imports to:
-port {
+import {
   extractBlockIdFromTripId,
   getShapeIdFromTrip,
   isTripCurrentlyActive,
