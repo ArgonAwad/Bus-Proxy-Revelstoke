@@ -727,6 +727,46 @@ function formatTime(seconds) {
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Enrich real vehicle entities with trip_headsign from static trips.txt
+function enrichWithHeadsign(entities, scheduleData) {
+  if (!Array.isArray(entities) || !scheduleData?.tripsMap) {
+    return entities;
+  }
+
+  return entities.map(entity => {
+    // We need a deep copy because we're mutating nested objects
+    const processed = JSON.parse(JSON.stringify(entity));
+
+    const tripId = processed?.vehicle?.trip?.tripId;
+    if (!tripId) return processed;
+
+    const tripRecord = scheduleData.tripsMap[tripId];
+    if (!tripRecord?.trip_headsign) return processed;
+
+    // Make sure trip object exists
+    if (!processed.vehicle.trip) {
+      processed.vehicle.trip = {};
+    }
+
+    // Set headsign (only if not already present from GTFS-RT)
+    if (!processed.vehicle.trip.tripHeadsign) {
+      processed.vehicle.trip.tripHeadsign = tripRecord.trip_headsign;
+    }
+
+    // Optional: also improve label if your frontend uses vehicle.vehicle.label
+    if (processed.vehicle?.vehicle?.label) {
+      const routeId = processed.vehicle.trip.routeId || 'UNKNOWN';
+      const routeDisplay = getRouteDisplayName(routeId);
+      const headsign = tripRecord.trip_headsign;
+      processed.vehicle.vehicle.label = headsign 
+        ? `${routeDisplay} - ${headsign}`
+        : processed.vehicle.vehicle.label;
+    }
+
+    return processed;
+  });
+}
+
 // Exports — unchanged set (all needed functions are still here)
 export {
   extractBlockIdFromTripId,
