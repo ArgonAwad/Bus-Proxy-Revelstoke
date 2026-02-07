@@ -784,5 +784,6 @@ export {
   isTripActiveAndScheduled,
   getScheduleTimeFromUnix,
   isBlockActive,
-  findCurrentOrRecentTripInBlock
+  findCurrentOrRecentTripInBlock,
+  enrichWithHeadsign
 };
