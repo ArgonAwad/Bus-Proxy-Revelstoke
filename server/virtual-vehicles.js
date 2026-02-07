@@ -475,67 +475,127 @@ function findCurrentOrRecentTripInBlock(blockId, scheduleData, currentScheduleSe
     if (trip.block_id === blockId) {
       const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
       if (staticStopTimes && staticStopTimes.length > 0) {
-        const firstTime = timeStringToSeconds(staticStopTimes[0]?.departure_time || staticStopTimes[0]?.arrival_time);
-        const lastTime = timeStringToSeconds(staticStopTimes[staticStopTimes.length - 1]?.arrival_time || staticStopTimes[staticStopTimes.length - 1]?.departure_time);
-        if (!isNaN(firstTime) && !isNaN(lastTime)) {
-          tripsInBlock.push({ tripId, route_id: trip.route_id, firstTime, lastTime });
+        const first = timeStringToSeconds(staticStopTimes[0]?.departure_time || staticStopTimes[0]?.arrival_time);
+        const last  = timeStringToSeconds(staticStopTimes[staticStopTimes.length - 1]?.arrival_time || staticStopTimes[staticStopTimes.length - 1]?.departure_time);
+        if (!isNaN(first) && !isNaN(last)) {
+          tripsInBlock.push({
+            tripId,
+            route_id: trip.route_id,
+            firstTime: first,
+            lastTime: last,
+            headsign: trip.trip_headsign || null
+          });
         }
       }
     }
   }
+
   if (tripsInBlock.length === 0) return null;
+
   tripsInBlock.sort((a, b) => a.firstTime - b.firstTime);
-  let adjustedCurrentTime = currentScheduleSec;
-  if (tripsInBlock[tripsInBlock.length - 1].lastTime < tripsInBlock[0].firstTime && currentScheduleSec < tripsInBlock[0].firstTime) {
-    adjustedCurrentTime += 86400;
+
+  let adjustedCurrent = currentScheduleSec;
+  const hasOvernight = tripsInBlock.some(t => t.lastTime < t.firstTime);
+  if (hasOvernight && currentScheduleSec < tripsInBlock[0].firstTime) {
+    adjustedCurrent += 86400;
   }
-  for (const trip of tripsInBlock) {
-    let adjustedLastTime = trip.lastTime;
-    if (trip.lastTime < trip.firstTime) adjustedLastTime += 86400;
-    if (adjustedCurrentTime >= trip.firstTime && adjustedCurrentTime <= adjustedLastTime) {
-      return { tripId: trip.tripId, routeId: trip.route_id, isActive: true, isDuringTrip: true };
+
+  // 1. Active trip right now?
+  for (const t of tripsInBlock) {
+    let end = t.lastTime;
+    if (t.lastTime < t.firstTime) end += 86400;
+    if (adjustedCurrent >= t.firstTime && adjustedCurrent <= end) {
+      return {
+        tripId: t.tripId,
+        routeId: t.route_id,
+        isDuringTrip: true
+      };
     }
   }
-  let mostRecentTrip = null;
-  let smallestTimeSince = Infinity;
-  for (const trip of tripsInBlock) {
-    let adjustedLastTime = trip.lastTime;
-    let tripAdjustedCurrentTime = currentScheduleSec;
-    if (trip.lastTime < trip.firstTime) {
-      adjustedLastTime += 86400;
-      if (currentScheduleSec < trip.firstTime) tripAdjustedCurrentTime += 86400;
+
+  // 2. Before first trip in block (pre-buffer)?
+  const first = tripsInBlock[0];
+  const preBuffer = 600; // your existing 10 min
+  if (adjustedCurrent >= first.firstTime - preBuffer && adjustedCurrent < first.firstTime) {
+    return {
+      tripId: first.tripId,
+      routeId: first.route_id,
+      isDuringTrip: false,
+      isPreFirst: true,
+      timeUntil: first.firstTime - adjustedCurrent
+    };
+  }
+
+  // 3. After some trip ended → find most recent + check for next
+  let mostRecent = null;
+  let minTimeSince = Infinity;
+  let nextTrip = null;
+  let minTimeUntil = Infinity;
+
+  for (const t of tripsInBlock) {
+    let end = t.lastTime;
+    let cur = adjustedCurrent;
+    if (t.lastTime < t.firstTime) {
+      end += 86400;
+      if (currentScheduleSec < t.firstTime) cur = adjustedCurrent;
     }
-    if (tripAdjustedCurrentTime > adjustedLastTime) {
-      const timeSince = tripAdjustedCurrentTime - adjustedLastTime;
-      if (timeSince < smallestTimeSince) {
-        smallestTimeSince = timeSince;
-        mostRecentTrip = trip;
+
+    // Time since end
+    if (cur > end) {
+      const since = cur - end;
+      if (since < minTimeSince) {
+        minTimeSince = since;
+        mostRecent = t;
+      }
+    }
+
+    // Time until start
+    if (cur < t.firstTime) {
+      const until = t.firstTime - cur;
+      if (until < minTimeUntil) {
+        minTimeUntil = until;
+        nextTrip = t;
       }
     }
   }
-  if (mostRecentTrip) {
-    return {
-      tripId: mostRecentTrip.tripId,
-      routeId: mostRecentTrip.route_id,
-      isActive: true,
-      isDuringTrip: false,
-      timeSinceLastTrip: smallestTimeSince
-    };
+
+  const LAYOVER_BUFFER = 60; // seconds
+
+  if (mostRecent && minTimeSince !== Infinity) {
+    if (minTimeSince <= LAYOVER_BUFFER) {
+      // Still in short layover buffer → stay at end of mostRecent
+      return {
+        tripId: mostRecent.tripId,
+        routeId: mostRecent.route_id,
+        isDuringTrip: false,
+        isLayoverShort: true,
+        timeSince: minTimeSince
+      };
+    } else if (nextTrip) {
+      // Buffer passed + future trip exists → use NEXT trip
+      return {
+        tripId: nextTrip.tripId,
+        routeId: nextTrip.route_id,
+        isDuringTrip: false,
+        isAwaitingNext: true,
+        timeUntil: minTimeUntil
+      };
+    } else {
+      // No next trip → linger at end of mostRecent
+      return {
+        tripId: mostRecent.tripId,
+        routeId: mostRecent.route_id,
+        isDuringTrip: false,
+        isLayoverLongNoNext: true,
+        timeSince: minTimeSince
+      };
+    }
   }
-  const firstTrip = tripsInBlock[0];
-  const buffer = 600;
-  if (adjustedCurrentTime >= (firstTrip.firstTime - buffer) && adjustedCurrentTime < firstTrip.firstTime) {
-    return {
-      tripId: firstTrip.tripId,
-      routeId: firstTrip.route_id,
-      isActive: true,
-      isDuringTrip: false,
-      timeUntilTrip: firstTrip.firstTime - adjustedCurrentTime
-    };
-  }
+
   return null;
 }
 
+// 22. Block-based virtual bus — returns richer GTFS-RT-like object
 // 22. Block-based virtual bus — returns richer GTFS-RT-like object
 function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeSec, operatorId = '36') {
   const scheduleTimeSec = getScheduleTimeFromUnix(currentTimeSec, operatorId);
@@ -554,16 +614,24 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
   const tripId = tripInfo.tripId;
   const tripRecord = scheduleData.tripsMap?.[tripId] || {};
 
-  // Get first stop time (used for both in-transit and layover cases)
   const staticStopTimes = getStaticScheduleForTrip(tripId, scheduleData);
-  const firstStop = staticStopTimes?.[0];
+  if (!staticStopTimes || staticStopTimes.length === 0) {
+    console.log(`[calculateVirtualBusPositionForBlock] No stop times for trip ${tripId}`);
+    return null;
+  }
+
+  // Get first stop time for startTime (will be the selected trip's start time)
+  const firstStopTime = staticStopTimes[0];
   let startTime = '';
-  if (firstStop) {
-    const depOrArr = firstStop.departure_time || firstStop.arrival_time || '00:00:00';
+  if (firstStopTime) {
+    const depOrArr = firstStopTime.departure_time || firstStopTime.arrival_time || '00:00:00';
     const sec = timeStringToSeconds(depOrArr);
     startTime = formatTime(sec);
   }
 
+  // ────────────────────────────────────────────────
+  // In-transit case — unchanged
+  // ────────────────────────────────────────────────
   if (tripInfo.isDuringTrip) {
     const pos = calculateExactPositionAlongShape(tripId, scheduleData, scheduleTimeSec, operatorId);
     if (!pos) return null;
@@ -599,38 +667,42 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
     };
   }
 
-  // Layover or before first trip
-  if (!staticStopTimes || staticStopTimes.length === 0) return null;
+  // ────────────────────────────────────────────────
+  // All non-in-transit cases (layover, pre-first, awaiting next)
+  // ────────────────────────────────────────────────
+  let stop;
+  let progress = 0;
+  let currentStatus = 1; // STOPPED_AT
 
-  let stop, progress, status, timeInfo, currentStatus;
-
-  if (tripInfo.timeUntilTrip) {
+  if (tripInfo.isAwaitingNext || tripInfo.isPreFirst) {
+    // Move to FIRST stop of the selected (next/upcoming) trip
     stop = staticStopTimes[0];
-    progress = 0;
-    status = 'BEFORE_FIRST_TRIP';
-    timeInfo = `Starts in ${Math.round(tripInfo.timeUntilTrip / 60)} min`;
-    currentStatus = 1; // STOPPED_AT
   } else {
+    // Short layover OR long layover with no next trip → stay at LAST stop
     stop = staticStopTimes[staticStopTimes.length - 1];
-    progress = 1;
-    status = 'LAYOVER';
-    timeInfo = `Layover: ${Math.round(tripInfo.timeSinceLastTrip / 60)} min`;
-    currentStatus = 1; // STOPPED_AT
   }
 
   const stopCoords = scheduleData.stops?.[stop.stop_id];
-  if (!stopCoords) return null;
+  if (!stopCoords) {
+    console.log(`[calculateVirtualBusPositionForBlock] No coordinates for stop ${stop.stop_id}`);
+    return null;
+  }
 
   return {
     latitude: stopCoords.lat,
     longitude: stopCoords.lon,
     bearing: null,
     speed: 0,
-    progress,
     currentStopSequence: stop.stop_sequence || 1,
     stopId: stop.stop_id,
     timestamp: Math.floor(currentTimeSec),
     currentStatus,
+    progress: progress.toFixed(3),
+    segment: {
+      start: stop.stop_id,
+      end: stop.stop_id
+    },
+    layover: true,
     trip: {
       tripId,
       routeId: tripRecord.route_id || 'UNKNOWN',
@@ -640,13 +712,6 @@ function calculateVirtualBusPositionForBlock(blockId, scheduleData, currentTimeS
       startDate: getCurrentDateStr(),
       startTime: startTime || '—'
     },
-    segment: {
-      start: stop.stop_id,
-      end: stop.stop_id
-    },
-    status,
-    layover: true,
-    timeInfo,
     metadata: {
       source: 'static_schedule',
       isVirtual: true
