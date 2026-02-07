@@ -334,7 +334,9 @@ app.get('/api/virtuals', async (req, res) => {
             label: label,
             is_virtual: true
           },
-          progress: position.progress?.toFixed(3) || '0.000',
+          progress: Number.isFinite(position.progress) 
+  ? Number(position.progress).toFixed(3) 
+  : '0.000',
           metadata: {
             source: position.metadata?.source || 'block_schedule',
             all_virtuals_mode: allVirtuals,
@@ -508,7 +510,9 @@ app.get('/api/buses', async (req, res) => {
                   label: label,
                   is_virtual: true
                 },
-                progress: position.progress?.toFixed(3) || '0.000',
+               progress: Number.isFinite(position.progress) 
+  ? Number(position.progress).toFixed(3) 
+  : '0.000',
                 metadata: {
                   source: position.metadata?.source || 'block_schedule',
                   all_virtuals_mode: allVirtuals,
