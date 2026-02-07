@@ -407,7 +407,7 @@ app.get('/api/buses', async (req, res) => {
       fetchGTFSFeed('alerts.pb', operatorId)
     ]);
 
-    // IMPORTANT: Load schedule EARLY so it's available for both real + virtual processing
+    // Load schedule EARLY so it's available for real + virtual processing
     await ensureScheduleLoaded();
     const schedule = scheduleLoader.scheduleData;
 
@@ -415,13 +415,13 @@ app.get('/api/buses', async (req, res) => {
       console.warn('[/api/buses] Schedule loaded but tripsMap is missing or empty');
     }
 
-    // Process real vehicle positions (blockId + headsign enrichment)
+    // Process real vehicle positions (add blockId + headsign enrichment)
     let processedVehicles = [];
     if (vehicleResult.success && vehicleResult.data?.entity) {
-      // First add block IDs
+      // First add parsed blockId
       processedVehicles = addParsedBlockIdToVehicles(vehicleResult.data.entity);
-      
-      // Then add headsigns from static schedule
+
+      // Then enrich with trip_headsign from static schedule (trips.txt)
       if (schedule?.tripsMap) {
         processedVehicles = enrichWithHeadsign(processedVehicles, schedule);
       } else {
@@ -429,7 +429,7 @@ app.get('/api/buses', async (req, res) => {
       }
     }
 
-    // Process real trip updates (just blockId for now)
+    // Process real trip updates (add blockId parsing)
     let processedTrips = tripResult.success ? addParsedBlockIdToTripUpdates(tripResult.data.entity || []) : [];
 
     // VIRTUAL BUSES: Check cache (5-second throttle)
@@ -445,7 +445,6 @@ app.get('/api/buses', async (req, res) => {
         if (!schedule?.tripsMap || !schedule?.stopTimesByTrip) {
           console.log('[/api/buses] Schedule incomplete, skipping virtual buses');
         } else {
-          // ... (the rest of your virtual bus generation code remains unchanged)
           // Get real vehicle trips for conflict check
           const realVehicleTripIds = new Set();
           if (vehicleResult.success && vehicleResult.data?.entity) {
@@ -458,10 +457,85 @@ app.get('/api/buses', async (req, res) => {
           virtualEntities = [];
           const processedVirtualBlocks = new Set();
           const allBlocks = getBlockIdsFromTripIds(Object.keys(schedule.stopTimesByTrip || {}), schedule);
-          
+
           allBlocks.forEach(blockId => {
-            // ... (your existing block processing loop here - no changes needed)
-            // Keep everything from if (processedVirtualBlocks.has(blockId)) return; onward
+            if (processedVirtualBlocks.has(blockId)) return;
+            processedVirtualBlocks.add(blockId);
+
+            const tripIdsInBlock = getTripIdsForBlock(blockId, schedule);
+            if (tripIdsInBlock.length === 0) return;
+
+            // Must have at least one trip scheduled today
+            let hasScheduledTripToday = false;
+            for (const tripId of tripIdsInBlock) {
+              if (isTripScheduledToday(tripId, schedule)) {
+                hasScheduledTripToday = true;
+                break;
+              }
+            }
+            if (!hasScheduledTripToday) return;
+
+            // Block must be active (with 10-min buffer before first trip)
+            if (!isBlockActive(blockId, schedule, currentScheduleSec, operatorId)) return;
+
+            // Only skip virtual if NOT in all_virtuals mode AND real vehicle exists
+            const hasRealVehicle = tripIdsInBlock.some(tripId => realVehicleTripIds.has(tripId));
+            if (!allVirtuals && hasRealVehicle) {
+              console.log(`[/api/buses] Skipping block ${blockId} - real vehicle exists`);
+              return;
+            }
+
+            const position = calculateVirtualBusPositionForBlock(blockId, schedule, currentTimeSec, operatorId);
+            if (!position) return;
+
+            const vehicleId = `VIRT-${blockId}`;
+            const headsign = position.trip?.tripHeadsign || '';
+            const routeDisplay = getRouteDisplayName(position.trip?.routeId || 'UNKNOWN');
+            const label = headsign ? `${routeDisplay} - ${headsign}` : `Ghost ${routeDisplay}`;
+
+            virtualEntities.push({
+              id: vehicleId,
+              vehicle: {
+                trip: {
+                  tripId: position.trip?.tripId || tripIdsInBlock[0],
+                  startTime: position.trip?.startTime || '—',
+                  startDate: position.trip?.startDate || getCurrentDateStr(),
+                  routeId: position.trip?.routeId || 'UNKNOWN',
+                  directionId: position.trip?.directionId ?? 0,
+                  blockId: blockId,
+                  tripHeadsign: headsign || null
+                },
+                position: {
+                  latitude: position.latitude,
+                  longitude: position.longitude,
+                  bearing: position.bearing ?? null,
+                  speed: position.speed ?? 0
+                },
+                currentStopSequence: position.currentStopSequence ?? 1,
+                currentStatus: position.currentStatus ?? (position.layover ? 1 : 2),
+                timestamp: position.timestamp ?? currentTimeSec,
+                stopId: position.stopId ?? (position.segment?.start || position.segment?.end || null),
+                vehicle: {
+                  id: vehicleId,
+                  label: label,
+                  is_virtual: true
+                },
+                progress: Number.isFinite(position.progress)
+                  ? Number(position.progress).toFixed(3)
+                  : '0.000',
+                metadata: {
+                  source: position.metadata?.source || 'block_schedule',
+                  all_virtuals_mode: allVirtuals,
+                  has_real_vehicle: hasRealVehicle,
+                  crossed_midnight: position.crossedMidnight || false,
+                  layover: position.layover || false,
+                  status: position.status || 'UNKNOWN',
+                  block_trips_count: tripIdsInBlock.length
+                }
+              }
+            });
+
+            console.log(`[/api/buses] Added virtual bus for block ${blockId} (${routeDisplay}) at ${position.latitude},${position.longitude}`);
           });
 
           // Cache the generated virtuals
@@ -469,6 +543,7 @@ app.get('/api/buses', async (req, res) => {
             virtualEntities,
             timestamp: Date.now()
           });
+
           console.log(`[/api/buses] Generated ${virtualEntities.length} virtual buses from ${processedVirtualBlocks.size} blocks`);
         }
       }
@@ -558,82 +633,6 @@ app.get('/api/buses', async (req, res) => {
       details: error.message,
       timestamp: new Date().toISOString()
     });
-  }
-});
-
-// Debug endpoint to see trip matching
-app.get('/api/debug/trip-matching', async (req, res) => {
-  try {
-    const operatorId = req.query.operatorId || DEFAULT_OPERATOR_ID;
-    
-    // Fetch real vehicle positions
-    const vehicleResult = await fetchGTFSFeed('vehicleupdates.pb', operatorId);
-    await ensureScheduleLoaded();
-    const schedule = scheduleLoader.scheduleData;
-    
-    // Get real vehicle trip IDs
-    const realVehicleTripIds = new Set();
-    const realVehicles = [];
-    
-    if (vehicleResult.success && vehicleResult.data?.entity) {
-      vehicleResult.data.entity.forEach(entity => {
-        const tripId = entity.vehicle?.trip?.tripId;
-        if (tripId) {
-          realVehicleTripIds.add(tripId);
-          realVehicles.push({
-            tripId: tripId,
-            routeId: entity.vehicle?.trip?.routeId,
-            blockId: entity.vehicle?.trip?.blockId || extractBlockIdFromTripId(tripId),
-            position: entity.vehicle?.position
-          });
-        }
-      });
-    }
-    
-    // Get all static trip IDs
-    const staticTripIds = Object.keys(schedule.stopTimesByTrip || {});
-    
-    // Check which static trips match real vehicles
-    const matchingAnalysis = staticTripIds.map(tripId => {
-      const hasRealVehicle = realVehicleTripIds.has(tripId);
-      const staticTrip = schedule.tripsMap?.[tripId];
-      
-      return {
-        tripId,
-        routeId: staticTrip?.route_id || 'unknown',
-        blockId: staticTrip?.block_id || extractBlockIdFromTripId(tripId),
-        serviceId: staticTrip?.service_id || 'unknown',
-        hasRealVehicle,
-        hasStaticSchedule: !!schedule.stopTimesByTrip?.[tripId],
-        isActiveNow: isTripActiveInStaticSchedule(
-          getStaticScheduleForTrip(tripId, schedule), 
-          getScheduleTimeInSeconds(operatorId)
-        ),
-        isScheduledToday: isTripScheduledToday(tripId, schedule),
-        calendarDatesCount: schedule.calendarDates?.[staticTrip?.service_id]?.size || 0
-      };
-    });
-    
-    res.json({
-      realVehicles,
-      realVehicleCount: realVehicleTripIds.size,
-      staticTripCount: staticTripIds.length,
-      matchingAnalysis,
-      currentTime: {
-        unix: Math.floor(Date.now() / 1000),
-        schedule: getScheduleTimeInSeconds(operatorId),
-        formatted: formatTime(getScheduleTimeInSeconds(operatorId))
-      },
-      calendarInfo: {
-        loaded: !!schedule.calendarDates,
-        serviceCount: schedule.calendarDates ? Object.keys(schedule.calendarDates).length : 0,
-        today: new Date().toISOString().split('T')[0].replace(/-/g, '')
-      }
-    });
-    
-  } catch (error) {
-    console.error('[DEBUG] Error:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 
